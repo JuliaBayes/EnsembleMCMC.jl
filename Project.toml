@@ -1,6 +1,6 @@
 name = "EnsembleMCMC"
 uuid = "ee15a35a-54c9-4a12-9721-3f3d8c2797c8"
-version = "0.0.1"
+version = "0.0.2"
 license = "Apache-2.0"
 
 [deps]

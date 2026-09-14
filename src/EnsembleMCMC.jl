@@ -7,9 +7,10 @@ import KernelAbstractions as KA
 using KernelAbstractions: @index
 
 export StretchMove, DEMove, DESnookerMove, MoveMixture
-export SerialExecutor, ThreadedExecutor, initialize, step!, sample!, current_state, snapshot
+export SerialExecutor, ThreadedExecutor, initialize, step!, sample!, current_state, snapshot, synchronize!
 export BatchedLogDensity
 export KernelExecutor
+export validate_positions
 
 include("rng.jl")
 include("moves.jl")

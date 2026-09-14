@@ -56,6 +56,9 @@ KA.@kernel function _propose_snooker_kernel!(
     logh,
     valid,
     accepted,
+    candidate_logdensities,
+    logdensities,
+    acceptance_probabilities,
     move::DESnookerMove,
 )
     j = @index(Global, Linear)
@@ -68,6 +71,8 @@ KA.@kernel function _propose_snooker_kernel!(
 
     @inbounds valid[j] = false
     @inbounds accepted[walker] = false
+    candidate_logdensities[walker] = logdensities[walker]
+    acceptance_probabilities[walker] = zero(T)
     old_scale = zero(T)
     for coordinate in 1:dimension
         difference = @inbounds positions[coordinate, walker] - positions[coordinate, reference]
@@ -117,6 +122,11 @@ KA.@kernel function _propose_snooker_kernel!(
             end
         end
     end
+    if !valid[j]
+        for coordinate in 1:dimension
+            candidates[coordinate, walker] = positions[coordinate, walker]
+        end
+    end
 end
 
 KA.@kernel function _compact_kernel!(indices, status, valid, n)
@@ -156,6 +166,7 @@ KA.@kernel function _accept_commit_kernel!(
     logdensities,
     candidate_logdensities,
     accepted,
+    acceptance_probabilities,
     controls,
     factors,
     indices,
@@ -175,6 +186,7 @@ KA.@kernel function _accept_commit_kernel!(
             @inbounds(logh[j]) + candidate_logdensity - @inbounds(logdensities[walker]),
         )
         probability = isnan(logratio) ? zero(T) : clamp(exp(logratio), zero(T), one(T))
+        acceptance_probabilities[walker] = probability
         accept = @inbounds factors[2, j] < probability
         @inbounds accepted[walker] = accept
         if accept
