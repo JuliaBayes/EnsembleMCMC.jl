@@ -21,6 +21,25 @@ function test_kernel_executor(device=copy)
             @test all(isfinite, reduce(hcat, Array.(current_state(state).positions)))
             @test Array(draws.positions) ≈ expected.positions
         end
+        reference = initialize(test_rng(), scalar, initial; move=DEMove())
+        state = initialize(test_rng(), target, device(initial); move=DEMove(), executor=KernelExecutor())
+        previous_logdensities = copy(current_state(reference).logdensities)
+        address = Philox4x((271, 12))
+        step!(reference, address; proposal_index=2)
+        step!(state, address; proposal_index=2)
+        transition = snapshot(state)
+        @test Array(transition.candidate_logdensities) ≈ scalar.(Array.(transition.candidates))
+        @test Array(transition.acceptance_probabilities) ≈
+            min.(1, exp.(Array(transition.candidate_logdensities) .- previous_logdensities))
+        @test Array(transition.acceptance_probabilities) ≈ current_state(reference).acceptance_probabilities
+        replacement = initial .+ 0.25
+        replacement_logdensities = scalar.(Vector.(eachcol(replacement)))
+        synchronize!(state, device(replacement), device(replacement_logdensities))
+        synchronize!(reference, replacement, replacement_logdensities)
+        step!(state, address; proposal_index=3)
+        step!(reference, address; proposal_index=3)
+        @test reduce(hcat, Array.(current_state(state).positions)) ≈ reduce(hcat, current_state(reference).positions)
+
         move = MoveMixture((StretchMove(), DEMove(), DESnookerMove()), [1, 1, 1]; schedule=:cycle)
         permutation = reverse(axes(initial, 2))
         reference = initialize(test_rng(), target, device(initial); move, executor=KernelExecutor())
@@ -49,8 +68,13 @@ function test_kernel_executor(device=copy)
         expected = sample!(initialize(test_rng(), flat, duplicates; move=DESnookerMove()), 1)
         expected_widths = copy(widths)
         empty!(widths)
-        draws = sample!(initialize(test_rng(), flat, device(duplicates);
-            move=DESnookerMove(), executor=KernelExecutor()), 1)
+        degenerate = initialize(test_rng(), flat, device(duplicates);
+            move=DESnookerMove(), executor=KernelExecutor())
+        draws = sample!(degenerate, 1)
+        transition = snapshot(degenerate)
+        rejected = .!Array(transition.accepted)
+        @test all(iszero, Array(transition.acceptance_probabilities)[rejected])
+        @test Array.(transition.candidates[rejected]) == Array.(transition.positions[rejected])
         @test widths == expected_widths
         @test Array(draws.positions) ≈ expected.positions
 

@@ -79,6 +79,29 @@ the same fields as `current_state`; `positions` is a vector of coordinate
 vectors, `acceptances` and `attempts` are counts per move, and `move_index` is
 `0` before the first sweep.
 
+## External sampler integration
+
+`initialize(...; logdensities=cached_values)` reuses initial log densities
+without calling the target. Values are copied, retain their own precision, and
+must match the target and walker order. NaN and `+Inf` remain invalid.
+
+`current_state` also exposes the last candidates, their log densities, and actual
+acceptance probabilities. These fields include rejected transitions and follow
+the same borrowing rules as positions.
+
+[`synchronize!`](@ref) copies external positions and matching cached densities
+into a valid state. It preserves walker IDs, RNG state, mixture phase, and counts.
+The caller owns density consistency and affine rank. Inputs must not alias the
+state's borrowed arrays. This operation clears the last-transition metadata.
+Use [`validate_positions`](@ref) to check finite coordinates and affine rank after
+retry initialization. Initialization uses the same validation. Ordinary
+synchronization does not repeat the rank check.
+
+`step!(state, rng; proposal_index=1)` accepts an externally addressed RNG of the
+same type used at initialization. Reserve two remaining partition levels for
+purposes and walkers. Inner mixture selection uses purpose 2, leaving purpose 1
+for an outer mixture. Ordinary `step!(state)` retains its standalone RNG law.
+
 ## Moves and threads
 
 ```jldoctest mixture
@@ -129,7 +152,8 @@ println(size(sample!(state, 10).positions))
 ```
 
 The broadcast illustrates the API. Use a faster batched computation when available.
-Initialization uses `scalar`. Each nonempty group calls `batch!` once, omitting
+Initialization uses `scalar` unless cached `logdensities` are supplied.
+Each nonempty group calls `batch!` once, omitting
 degenerate proposals. Fill every output, keep positions read-only, and retain
 neither borrowed array. Both callbacks must compute the same log density.
 Exceptions or invalid outputs invalidate the state.
@@ -181,7 +205,8 @@ because kernel launches and group synchronization dominate.
 ## Inputs and outputs
 
 Initial coordinates must be finite and span their dimension. Initial log densities
-must be finite. Stretch requires at least `2d` walkers. DE and snooker require at
+may be `-Inf`, allowing recovery from starts outside support. Stretch requires
+at least `2d` walkers. DE and snooker require at
 least `max(2d, 4)`. A target may return `-Inf` for proposals outside its support.
 NaN and `+Inf` are errors.
 

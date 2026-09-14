@@ -1,7 +1,8 @@
 """
     BatchedLogDensity(scalar, batch!)
 
-Wrap scalar and batched log-density callbacks. Initialization uses `scalar(x)`.
+Wrap scalar and batched log-density callbacks. Initialization uses `scalar(x)`
+unless cached `logdensities` are supplied.
 During sampling, `batch!(values, positions)` receives borrowed `SubArray` views
 of output storage and a coordinate-by-candidate matrix containing only valid
 proposals. The callback must treat `positions` as read-only, fill every entry of
