@@ -8,12 +8,30 @@ struct SerialExecutor <: AbstractExecutor end
 """
     ThreadedExecutor()
 
-Evaluate walker proposals with Julia threads within each group of a sweep.
+Use Julia threads when proposal groups contain enough work to benefit.
+The first few groups calibrate task size and compare serial and threaded costs
+for each move. Calibration uses normal proposals, without extra density calls.
 Groups still advance in order. The log-density function must support concurrent
 calls. A deterministic target gives the same trajectory as [`SerialExecutor`](@ref)
 for the same initial state, move, RNG, and walker IDs.
 """
 struct ThreadedExecutor <: AbstractExecutor end
+
+mutable struct _GroupSchedule
+    samples::Int
+    ntasks::Int
+    serial_ns::Float64
+    threaded_ns::Float64
+end
+struct _ThreadedExecutor <: AbstractExecutor
+    schedules::Vector{_GroupSchedule}
+end
+
+_prepare_executor(executor, nmoves) = executor
+function _prepare_executor(::ThreadedExecutor, nmoves)
+    samples = Threads.nthreads(:default) == 1 ? 8 : 0
+    return _ThreadedExecutor([_GroupSchedule(samples, 1, Inf, Inf) for _ in 1:nmoves])
+end
 
 """
     KernelExecutor()
@@ -51,7 +69,7 @@ struct MoveMixture{M<:Tuple,W<:AbstractVector}
             total <= typemax(Int) || throw(ArgumentError("Mixture cycle is too long"))
             Int.(weights)
         elseif schedule == :random
-            values = collect(promote(map(float, weights)...))
+            values = _promoted_values(map(float, weights))
             scaled = values ./ maximum(values)
             scaled ./ sum(scaled)
         else
@@ -125,7 +143,21 @@ array. Later steps and edits to the snapshot cannot affect each other.
 A snapshot contains sample data and counts, not a resumable sampler checkpoint.
 """
 snapshot(state::EnsembleState) = _snapshot(state, state.batch_workspace)
-_snapshot(state, workspace) = deepcopy(current_state(state))
+function _snapshot(state, workspace)
+    current = current_state(state)
+    if isbitstype(eltype(first(current.positions))) && isbitstype(eltype(current.logdensities))
+        return (; positions=map(copy, current.positions), logdensities=copy(current.logdensities),
+            accepted=copy(current.accepted), walker_ids=copy(current.walker_ids),
+            attempts=copy(current.attempts), acceptances=copy(current.acceptances),
+            current.move_index, current.sweep_count)
+    end
+    return deepcopy(current)
+end
+
+_coordinate_type(::AbstractVector{<:AbstractVector{T}}) where {T} = T
+_coordinate_type(initial) = promote_type(map(eltype, initial)...)
+_promoted_values(values::AbstractVector{T}) where {T} =
+    isconcretetype(T) ? values : collect(promote(values...))
 
 function Base.show(io::IO, state::EnsembleState)
     print(io, "EnsembleState(", length(first(state.positions)), " dimensions, ",
@@ -163,7 +195,7 @@ function initialize(
     d = length(first(initial))
     d > 0 && all(x -> length(x) == d, initial) ||
         throw(DimensionMismatch("Walker dimensions must agree and be positive"))
-    T = float(promote_type(map(eltype, initial)...))
+    T = float(_coordinate_type(initial))
     T <: AbstractFloat || throw(ArgumentError("Coordinates must be real floating-point values"))
     positions = [Vector{T}(x) for x in initial]
     all(x -> all(isfinite, x), positions) || throw(ArgumentError("Coordinates must be finite"))
@@ -180,13 +212,13 @@ function initialize(
     length(ids) == n && length(unique(ids)) == n &&
         all(id -> 1 <= id <= typemax(Int32) - 2, ids) ||
         throw(ArgumentError("Walker IDs must be distinct positive stream indices"))
-    logds = collect(promote(map(x -> _checked_logdensity(logdensity, x), positions)...))
+    logds = _promoted_values(map(x -> _checked_logdensity(logdensity, x), positions))
     all(isfinite, logds) || throw(ArgumentError("Initial log densities must be finite"))
     owned_rng = copy(rng)
     cycle_part = RNGPartition(owned_rng, 0:(typemax(Int16) - 2))
     weights = move isa MoveMixture ? copy(move.weights) : nothing
     return EnsembleState(
-        logdensity, moves, weights, executor, owned_rng, cycle_part,
+        logdensity, moves, weights, _prepare_executor(executor, length(moves)), owned_rng, cycle_part,
         [rngpart_createrng(typeof(rng)) for _ in 1:n], ids, sortperm(ids),
         positions, deepcopy(positions), logds, copy(logds),
         _batch_workspace(logdensity, positions, logds), fill(false, n),
@@ -239,7 +271,7 @@ function _select_move(weights::AbstractVector{T}, rng, step) where {T<:AbstractF
         total += weights[i]
         u < total && return i
     end
-    return findlast(>(0), weights)
+    return something(findlast(>(0), weights))
 end
 
 function _groups(move, part, proposal_idx, order)
@@ -283,10 +315,52 @@ function _evaluate_group!(::SerialExecutor, state, move, part, idx, group, compl
         _evaluate!(state, move, part, idx, i, complement, acceptance_part)
     end
 end
-function _evaluate_group!(::ThreadedExecutor, state, move, part, idx, group, complement, acceptance_part)
-    Threads.@threads for k in eachindex(group)
+function _evaluate_chunk!(task, ntasks, state, move, part, idx, group, complement, acceptance_part)
+    n = length(group)
+    for k in (fld((task - 1) * n, ntasks) + 1):fld(task * n, ntasks)
         _evaluate!(state, move, part, idx, group[k], complement, acceptance_part)
     end
+end
+
+function _evaluate_chunks!(ntasks, state, move, part, idx, group, complement, acceptance_part)
+    ntasks == 1 && return _evaluate_group!(SerialExecutor(), state, move, part,
+        idx, group, complement, acceptance_part)
+    @sync for task in Base.OneTo(ntasks)
+        Threads.@spawn _evaluate_chunk!($task, $ntasks, state, move, part,
+            idx, group, complement, acceptance_part)
+    end
+end
+
+function _evaluate_group!(executor::_ThreadedExecutor, state, move, part, idx,
+    group, complement, acceptance_part)
+    schedule = executor.schedules[idx]
+    sample = schedule.samples
+    ntasks = sample < 4 ? 1 : min(schedule.ntasks, length(group))
+    # Warm both execution paths before measuring. Use minima to exclude GC and
+    # scheduler pauses from the estimate of useful work per walker.
+    measuring = sample in (2, 3, 5, 6, 7)
+    start = measuring ? time_ns() : UInt64(0)
+    _evaluate_chunks!(ntasks, state, move, part, idx, group, complement, acceptance_part)
+    sample == 8 && return nothing
+    if measuring
+        elapsed = (time_ns() - start) / length(group)
+        if sample < 4
+            schedule.serial_ns = min(schedule.serial_ns, elapsed)
+        else
+            schedule.threaded_ns = min(schedule.threaded_ns, elapsed)
+        end
+    end
+    schedule.samples = sample + 1
+    if sample == 3
+        # Target at least 50 microseconds of serial work per task, then confirm
+        # that the chosen task count actually beats serial execution.
+        schedule.ntasks = clamp(floor(Int, schedule.serial_ns * length(group) / 50_000),
+            1, min(Threads.nthreads(:default), length(group)))
+        schedule.ntasks == 1 && (schedule.samples = 8)
+    elseif sample == 7 && schedule.threaded_ns >= 0.8schedule.serial_ns
+        schedule.ntasks = 1
+    end
+    return nothing
 end
 
 Base.@inline function _evaluate_candidate!(::Nothing, state, i, log_hastings, acceptance_part)

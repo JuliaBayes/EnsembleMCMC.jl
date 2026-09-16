@@ -108,6 +108,8 @@ Start Julia with multiple threads, such as `julia --threads=4`, to use
 [`ThreadedExecutor`](@ref). The target must support concurrent calls and must not
 mutate its input. Groups update in order with frozen complements. Seeded results
 do not depend on thread scheduling.
+The executor uses the first few groups to choose a task size for each move.
+Cheap groups stay serial when threading would cost more than it saves.
 
 ## Batched log densities
 
