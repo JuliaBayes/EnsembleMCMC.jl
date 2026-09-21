@@ -6,6 +6,7 @@ license = "Apache-2.0"
 [deps]
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+PrecompileTools = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Random123 = "74087812-796a-5b5d-8853-05524746bad3"
 
@@ -14,6 +15,7 @@ CUDA = "6"
 KernelAbstractions = "0.9.42"
 julia = "1.10"
 LinearAlgebra = "1"
+PrecompileTools = "1"
 Random = "1"
 Random123 = "1.2"
 
