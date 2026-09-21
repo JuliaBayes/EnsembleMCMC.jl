@@ -21,7 +21,7 @@ function _prepare_gaussian_group!(w::KernelWorkspace, move, state, indices)
 end
 
 function _evaluate_group!(::KernelExecutor, state, fitted::_FittedGaussianMove,
-    part, idx, group, complement, acceptance_part)
+    part, move_index, proposal_index, group, complement, acceptance_part)
     w = state.batch_workspace
     move = fitted.move
     n = length(group)
@@ -33,11 +33,12 @@ function _evaluate_group!(::KernelExecutor, state, fitted::_FittedGaussianMove,
     if !fitted.valid
         w.host_status[1] = 0
         _reject_gaussian_group_kernel!(backend, 1)(
-            state.accepted, w.controls, w.valid, w.status, n; ndrange=1)
+            w.candidates, w.positions, state.candidate_logdensities, state.logdensities,
+            state.accepted, state.acceptance_probabilities, w.controls, w.valid, w.status, n; ndrange=1)
         return nothing
     end
 
-    normal_part = _walker_rngpart(part, _SCALE_PURPOSE, idx)
+    normal_part = _walker_rngpart(part, _SCALE_PURPOSE, proposal_index)
     for (j, i) in enumerate(group)
         rng, id = state.walker_rngs[i], state.walker_ids[i]
         set_rng!(rng, normal_part, id)
@@ -48,7 +49,8 @@ function _evaluate_group!(::KernelExecutor, state, fitted::_FittedGaussianMove,
     copyto!(move.scratch, 1, move.host_scratch, 1, size(w.positions, 1) * n)
     copyto!(w.factors, 1, w.host_factors, 1, 2n)
     _propose_gaussian_kernel!(backend, 64)(w.candidates, w.positions, w.controls,
-        w.logh, w.valid, state.accepted, move.mean, move.factor, move.scratch,
+        w.logh, w.valid, state.accepted, state.candidate_logdensities,
+        state.logdensities, state.acceptance_probabilities, move.mean, move.factor, move.scratch,
         fitted.scale; ndrange=n)
     _compact_kernel!(backend, 1)(w.indices, w.status, w.valid, n; ndrange=1)
     copyto!(w.host_status, 1, w.status, 1, 1)
@@ -62,12 +64,20 @@ KA.@kernel function _gather_gaussian_complement_kernel!(scratch, positions, cont
     @inbounds scratch[coordinate, j] = positions[coordinate, walker]
 end
 
-KA.@kernel function _reject_gaussian_group_kernel!(accepted, controls, valid, status, n)
+KA.@kernel function _reject_gaussian_group_kernel!(
+    candidates, positions, candidate_logdensities, logdensities,
+    accepted, acceptance_probabilities, controls, valid, status, n,
+)
     index = @index(Global, Linear)
     for j in 1:n
         walker = @inbounds controls[1, j]
         @inbounds accepted[walker] = false
         @inbounds valid[j] = false
+        @inbounds candidate_logdensities[walker] = logdensities[walker]
+        @inbounds acceptance_probabilities[walker] = zero(eltype(acceptance_probabilities))
+        for coordinate in axes(positions, 1)
+            @inbounds candidates[coordinate, walker] = positions[coordinate, walker]
+        end
     end
     @inbounds status[1] = zero(eltype(status))
     @inbounds status[2] = zero(eltype(status))
@@ -80,6 +90,9 @@ KA.@kernel function _propose_gaussian_kernel!(
     logh,
     valid,
     accepted,
+    candidate_logdensities,
+    logdensities,
+    acceptance_probabilities,
     mean,
     factor,
     scratch,
@@ -126,5 +139,11 @@ KA.@kernel function _propose_gaussian_kernel!(
     @inbounds valid[j] = proposal_valid
     if proposal_valid
         @inbounds logh[j] = (candidate_distance - current_distance) / 2
+    else
+        @inbounds candidate_logdensities[walker] = logdensities[walker]
+        @inbounds acceptance_probabilities[walker] = zero(eltype(acceptance_probabilities))
+        for coordinate in 1:dimension
+            @inbounds candidates[coordinate, walker] = positions[coordinate, walker]
+        end
     end
 end

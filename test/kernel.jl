@@ -4,6 +4,20 @@ function test_kernel_executor(device=copy)
         batch!(values, positions) = (values .= vec(-sum(abs2, positions; dims=1) / 2))
         target = BatchedLogDensity(scalar, batch!)
         initial = randn(MersenneTwister(18), 3, 12)
+        coordinates = Float32.(initial)
+        values = Float64.(scalar.(Vector.(eachcol(coordinates))))
+        cached = device(values)
+        calls = Ref(0)
+        counted(x) = (calls[] += 1; scalar(x))
+        state = initialize(test_rng(), BatchedLogDensity(counted, batch!), device(coordinates);
+            logdensities=cached, executor=KernelExecutor())
+        @test calls[] == 0
+        @test eltype(current_state(state).logdensities) === Float64
+        fill!(cached, 99)
+        @test Array(current_state(state).logdensities) == values
+        reference = initialize(test_rng(), scalar, coordinates; logdensities=values)
+        @test Array(sample!(state, 2).positions) ≈ sample!(reference, 2).positions
+
         for move in (StretchMove(), DEMove(), DESnookerMove(), GaussianReplacementMove())
             reference = initialize(test_rng(), scalar, initial; move)
             state = initialize(test_rng(), target, device(initial); move, executor=KernelExecutor())
@@ -21,6 +35,24 @@ function test_kernel_executor(device=copy)
             @test all(isfinite, reduce(hcat, Array.(current_state(state).positions)))
             @test Array(draws.positions) ≈ expected.positions
         end
+        reference = initialize(test_rng(), scalar, initial; move=DEMove())
+        state = initialize(test_rng(), target, device(initial); move=DEMove(), executor=KernelExecutor())
+        previous_logdensities = copy(current_state(reference).logdensities)
+        address = Philox4x((271, 12))
+        step!(reference, address; proposal_index=2)
+        step!(state, address; proposal_index=2)
+        transition = snapshot(state)
+        @test Array(transition.candidate_logdensities) ≈ scalar.(Array.(transition.candidates))
+        @test Array(transition.acceptance_probabilities) ≈
+            min.(1, exp.(Array(transition.candidate_logdensities) .- previous_logdensities))
+        @test Array(transition.acceptance_probabilities) ≈ current_state(reference).acceptance_probabilities
+        replacement = initial .+ 0.25
+        replacement_logdensities = scalar.(Vector.(eachcol(replacement)))
+        synchronize!(state, device(replacement), device(replacement_logdensities))
+        synchronize!(reference, replacement, replacement_logdensities)
+        step!(state, address; proposal_index=3)
+        step!(reference, address; proposal_index=3)
+        @test reduce(hcat, Array.(current_state(state).positions)) ≈ reduce(hcat, current_state(reference).positions)
 
         integer_initial = [-1 0 0 1 0 0; 0 -1 0 0 1 0; 0 0 -1 0 0 1]
         expected = sample!(initialize(test_rng(), scalar, integer_initial;
@@ -61,8 +93,13 @@ function test_kernel_executor(device=copy)
         expected = sample!(initialize(test_rng(), flat, duplicates; move=DESnookerMove()), 1)
         expected_widths = copy(widths)
         empty!(widths)
-        draws = sample!(initialize(test_rng(), flat, device(duplicates);
-            move=DESnookerMove(), executor=KernelExecutor()), 1)
+        degenerate = initialize(test_rng(), flat, device(duplicates);
+            move=DESnookerMove(), executor=KernelExecutor())
+        draws = sample!(degenerate, 1)
+        transition = snapshot(degenerate)
+        rejected = .!Array(transition.accepted)
+        @test all(iszero, Array(transition.acceptance_probabilities)[rejected])
+        @test Array.(transition.candidates[rejected]) == Array.(transition.positions[rejected])
         @test widths == expected_widths
         @test Array(draws.positions) ≈ expected.positions
 
@@ -79,6 +116,37 @@ function test_kernel_executor(device=copy)
         step!(initialize(Philox4x((3, 19)), flat, device(initial .- initial[:, 1]);
             move=GaussianReplacementMove(), executor=KernelExecutor()))
         @test widths == original_widths
+
+        mixture = MoveMixture((DEMove(), GaussianReplacementMove()), [1, 1]; schedule=:cycle)
+        duplicates = reshape([0.0, 0, 0, 0, 0, 0, 0, 1], 1, :)
+        expected = initialize(test_rng(), flat, duplicates; move=mixture)
+        actual = initialize(test_rng(), flat, device(duplicates);
+            move=mixture, executor=KernelExecutor())
+        step!(expected, 2)
+        step!(actual, 2)
+        @test reduce(hcat, Array.(current_state(actual).candidates)) ≈
+            reduce(hcat, current_state(expected).candidates)
+        @test Array(current_state(actual).candidate_logdensities) ==
+            current_state(expected).candidate_logdensities
+        @test Array(current_state(actual).acceptance_probabilities) ==
+            current_state(expected).acceptance_probabilities
+
+        points = duplicates .+ 1
+        point_target = BatchedLogDensity(x -> x[1] in (1, 2) ? 0.0 : -Inf,
+            (v, x) -> (v .= ifelse.((vec(x) .== 1) .| (vec(x) .== 2), 0.0, -Inf)))
+        mixture = MoveMixture((DEMove(gamma0=eps()/4, sigma=0), GaussianReplacementMove()),
+            [1, 1]; schedule=:cycle)
+        state = initialize(test_rng(), point_target, device(points); move=mixture, executor=KernelExecutor())
+        step!(state, 2)
+        @test all(iszero, Array(current_state(state).acceptance_probabilities))
+
+        extremes = reshape(Float32[1.2f38, 1.2f38, 1.2f38, 3f38, 3f38, 3f38], 1, :)
+        state = initialize(test_rng(), flat, device(extremes);
+            move=GaussianReplacementMove(), executor=KernelExecutor())
+        @test all(1:8) do _
+            step!(state)
+            all(x -> all(isfinite, Array(x)), current_state(state).candidates)
+        end
 
         calls = Ref(0)
         incomplete!(values, positions) = (calls[] += 1; nothing)

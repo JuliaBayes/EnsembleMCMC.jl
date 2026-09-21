@@ -212,3 +212,5 @@ include("norm.jl")
 include("gaussian.jl")
 include("batched.jl")
 include("kernel.jl")
+
+include("integration.jl")

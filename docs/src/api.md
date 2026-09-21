@@ -12,6 +12,8 @@ step!
 sample!
 current_state
 snapshot
+synchronize!
+validate_positions
 ```
 
 ## Moves

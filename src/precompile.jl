@@ -13,7 +13,9 @@
             step!(state, 2)
             sample!(state, 2)
             current_state(state)
-            snapshot(state)
+            saved = snapshot(state)
+            synchronize!(state, saved.positions, saved.logdensities)
+            step!(state, rng; proposal_index=2)
         end
         step!(initialize(Threefry4x((42, 1, 2, 3)), logdensity, first(ensembles);
             move=DEMove()), 2)
