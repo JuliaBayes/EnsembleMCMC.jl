@@ -72,9 +72,13 @@ function test_kernel_executor(device=copy)
             (values, positions) -> (push!(widths, size(positions, 2)); fill!(values, -Inf)))
         draws = sample!(initialize(Philox4x((3, 19)), flat, device(initial);
             move=GaussianReplacementMove(), executor=KernelExecutor()), 1)
-        @test widths == [3]
+        original_widths = copy(widths)
         @test !any(Array(draws.accepted))
         @test Array(draws.positions[:, :, 1]) == initial
+        empty!(widths)
+        step!(initialize(Philox4x((3, 19)), flat, device(initial .- initial[:, 1]);
+            move=GaussianReplacementMove(), executor=KernelExecutor()))
+        @test widths == original_widths
 
         calls = Ref(0)
         incomplete!(values, positions) = (calls[] += 1; nothing)

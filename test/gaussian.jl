@@ -65,27 +65,33 @@
         step!(state)
         @test calls[] == 2size(initial, 2)
 
-        # This seed splits the independent directions between the groups. Each
-        # complement is rank one despite full affine rank of the whole ensemble.
+        # Every partition has at least one singular complement. Reject proposals
+        # so the first group cannot change the second group's fitting geometry.
         initial = [0.0 0 0 0 0 0 1 0; 0 0 0 0 0 0 0 1]
         calls[] = 0
-        state = initialize(Philox4x((1, 19)), target, initial;
+        reject_proposals(x) = (calls[] += 1; calls[] <= size(initial, 2) ? 0.0 : -Inf)
+        state = initialize(Philox4x((1, 19)), reject_proposals, initial;
             move=GaussianReplacementMove(shrinkage=0))
         draws = sample!(state, 1)
-        @test calls[] == size(initial, 2)
+        @test calls[] in (size(initial, 2), 3size(initial, 2) ÷ 2)
         @test !any(draws.accepted)
         @test draws.positions[:, :, 1] == initial
 
-        # Seed 3 puts the three identical, nonzero points in one complement.
+        # Translating constant points to zero must not change fit validity.
+        # Seeded partitions can differ between Julia versions.
         initial = [1.0 1 1 0 0 2; 0.1 0.1 0.1 0 1 0]
         calls[] = 0
-        supported(x) = (calls[] += 1; any(y -> x == y, eachcol(initial)) ? 0.0 : -Inf)
-        state = initialize(Philox4x((3, 19)), supported, initial;
+        state = initialize(Philox4x((3, 19)), reject_proposals, initial;
             move=GaussianReplacementMove())
         draws = sample!(state, 1)
-        @test calls[] == 9 # Only the nonzero-variance complement generates proposals.
+        original_calls = calls[]
         @test !any(draws.accepted)
         @test draws.positions[:, :, 1] == initial
+        initial = initial .- initial[:, 1]
+        calls[] = 0
+        step!(initialize(Philox4x((3, 19)), reject_proposals, initial;
+            move=GaussianReplacementMove()))
+        @test calls[] == original_calls
     end
 
     @testset "Extreme coordinate rescaling" begin
