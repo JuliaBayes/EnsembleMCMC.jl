@@ -20,6 +20,7 @@ snapshot
 StretchMove
 DEMove
 DESnookerMove
+GaussianReplacementMove
 MoveMixture
 ```
 

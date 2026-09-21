@@ -15,6 +15,9 @@ struct KernelWorkspace{T,P,L,V,I,C,F,A,S}
 end
 
 _with_kernel_device(f, initial) = f()
+_kernel_move(move, initial) = move
+_kernel_move_supported(move) = false
+_kernel_move_supported(::Union{StretchMove,DEMove,DESnookerMove}) = true
 function _check_kernel_array(initial)
     KA.get_backend(initial) isa KA.CPU ||
         throw(ArgumentError("KernelExecutor supports CPU and CUDA arrays"))
@@ -25,7 +28,8 @@ function _initialize_kernel(rng, target, initial; kwargs...)
     _check_kernel_array(initial)
     return _with_kernel_device(initial) do
         host = initialize(rng, target.scalar, Array(initial); kwargs...)
-        all(m -> m isa Union{StretchMove,DEMove,DESnookerMove}, host.moves) ||
+        moves = map(m -> _kernel_move(m, initial), host.moves)
+        all(_kernel_move_supported, moves) ||
             throw(ArgumentError("KernelExecutor supports only the built-in moves"))
         d, n = length(first(host.positions)), length(host.positions)
         T, L = eltype(first(host.positions)), eltype(host.logdensities)
@@ -44,7 +48,7 @@ function _initialize_kernel(rng, target, initial; kwargs...)
             similar(accepted), status, zeros(Int, 4, n), zeros(T, 2, n), zeros(Int, 3))
         candidate_logds = copy(logds)
         KA.synchronize(KA.get_backend(positions))
-        return EnsembleState(target, host.moves, host.weights, KernelExecutor(),
+        return EnsembleState(target, moves, host.weights, KernelExecutor(),
             host.rng, host.cycle_partition, host.walker_rngs, host.walker_ids, host.walker_order,
             collect(eachcol(positions)), collect(eachcol(candidates)), logds, candidate_logds,
             workspace, accepted, host.attempts, host.accepts, 0, 0, true)

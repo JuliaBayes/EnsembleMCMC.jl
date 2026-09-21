@@ -1,7 +1,7 @@
 # EnsembleMCMC.jl
 
 EnsembleMCMC samples a log density with coupled walkers. It provides Stretch,
-differential-evolution (DE), and snooker moves, fixed mixtures, and threaded
+differential-evolution (DE), snooker, and Gaussian replacement moves, fixed mixtures, and threaded
 evaluation. Julia 1.10 or later is required. The package is not registered yet.
 
 ## Installation
@@ -111,6 +111,29 @@ do not depend on thread scheduling.
 The executor uses the first few groups to choose a task size for each move.
 Cheap groups stay serial when threading would cost more than it saves.
 
+### Gaussian replacement
+
+[`GaussianReplacementMove`](@ref) fits a Gaussian to the frozen complement before
+updating each group. It proposes independent replacements with the exact Hastings
+correction. This specializes the replacement move in
+[Goodman and Weare (2010), equation (12)](https://msp.org/camcos/2010/5-1/camcos-v5-n1-p04-p.pdf).
+
+```julia
+move = MoveMixture((DEMove(), GaussianReplacementMove()), [1, 1])
+state = initialize(rng, logdensity, initial; move)
+```
+
+The default `shrinkage=0.5` blends the complement's sample covariance with an
+isotropic covariance of the same trace. It needs at least `max(2d, 4)` walkers.
+Set `shrinkage=0` for the unregularized covariance, requiring at least `2(d + 1)`
+walkers. A failed covariance fit leaves that group unchanged without evaluating
+the target. Repeated failures can stall the move.
+
+Use Gaussian replacement for roughly elliptical targets. A poor Gaussian fit can
+miss tails or modes, especially in funnels. Check tail estimates and independent
+runs, not acceptance or ESS alone. Shrinkage breaks general affine equivariance.
+The default move remains `StretchMove`.
+
 ## Batched log densities
 
 Use [`BatchedLogDensity`](@ref) to evaluate candidates together, one per column:
@@ -175,7 +198,8 @@ before returning. It must fill every output and leave input positions unchanged.
 Sampler operations run on the input device and complete before returning.
 CPU and GPU floating-point arithmetic may differ, so trajectories need not match
 bit for bit. `KernelExecutor` also accepts CPU matrices for testing and supports
-the three built-in moves and their mixtures.
+all built-in moves and their mixtures. Gaussian replacement also keeps its
+complement fit on the device, returning only scalar fit checks to the host.
 
 GPU sampling suits expensive, parallel batch targets. Small targets can be slower
 because kernel launches and group synchronization dominate.

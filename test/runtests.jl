@@ -209,5 +209,6 @@ test_rng() = Philox4x((573, 19))
 end
 
 include("norm.jl")
+include("gaussian.jl")
 include("batched.jl")
 include("kernel.jl")

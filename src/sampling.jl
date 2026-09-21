@@ -156,6 +156,8 @@ end
 
 _coordinate_type(::AbstractVector{<:AbstractVector{T}}) where {T} = T
 _coordinate_type(initial) = promote_type(map(eltype, initial)...)
+_allocate_move(move, positions) = move
+_prepare_group!(move, state, group, complement) = move
 _promoted_values(values::AbstractVector{T}) where {T} =
     isconcretetype(T) ? values : collect(promote(values...))
 
@@ -205,6 +207,7 @@ function initialize(
     n = length(positions)
     n >= maximum(m -> minimum_walkers(m, d), moves) ||
         throw(ArgumentError("Too few walkers for the dimension and selected moves"))
+    moves = map(m -> _allocate_move(m, positions), moves)
     centered = reduce(hcat, [x .- first(positions) for x in positions])
     rank(centered; rtol = max(size(centered)...) * eps(T)) == d ||
         throw(ArgumentError("Initial walkers must have full affine rank"))
@@ -425,8 +428,10 @@ function _step!(state)
     acceptance_part = _walker_rngpart(part, 3, idx)
     for active in eachindex(groups)
         group = groups[active]
-        _evaluate_group!(state.executor, state, move, part, idx, group,
-            _complement(groups, active), acceptance_part)
+        complement = _complement(groups, active)
+        fitted_move = _prepare_group!(move, state, group, complement)
+        _evaluate_group!(state.executor, state, fitted_move, part, idx, group,
+            complement, acceptance_part)
         _evaluate_batch!(state.batch_workspace, state, group, acceptance_part)
         _commit_group!(state, group, state.batch_workspace)
     end
