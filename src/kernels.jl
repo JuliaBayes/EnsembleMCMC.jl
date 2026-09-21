@@ -139,6 +139,7 @@ KA.@kernel function _compact_kernel!(indices, status, valid, n)
         end
     end
     @inbounds status[1] = count
+    @inbounds status[2] = zero(eltype(status))
 end
 
 KA.@kernel function _gather_kernel!(batchpositions, candidates, controls, indices)

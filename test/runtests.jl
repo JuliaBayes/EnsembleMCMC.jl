@@ -42,12 +42,15 @@ test_rng() = Philox4x((573, 19))
         permutation = reverse(eachindex(initial))
         move = MoveMixture((StretchMove(), DEMove(), DESnookerMove()), [1, 1, 1]; schedule=:cycle)
         reference = initialize(test_rng(), gaussian_logdensity, initial; move)
-        threaded = initialize(test_rng(), gaussian_logdensity, initial;
+        calls = Threads.Atomic{Int}(0)
+        counted_target(x) = (Threads.atomic_add!(calls, 1); gaussian_logdensity(x))
+        threaded = initialize(test_rng(), counted_target, initial;
             move, executor=ThreadedExecutor())
         reordered = initialize(test_rng(), gaussian_logdensity, initial[permutation];
             move, walker_ids=collect(permutation))
         expected = sample!(reference, 30)
         actual = sample!(threaded, 30)
+        @test calls[] == 31length(initial)
         reordered_draws = sample!(reordered, 30)
         @test actual == expected
         @test reordered_draws.positions[:, permutation, :] == expected.positions
@@ -175,6 +178,10 @@ test_rng() = Philox4x((573, 19))
         saved.attempts[1] = 0
         saved.acceptances[1] = 0
         @test snapshot(state) == snapshot(step!(reference))
+        precise = initialize(test_rng(), x -> BigFloat(gaussian_logdensity(x)), initial)
+        owned = snapshot(precise)
+        owned.logdensities[1] = 0
+        @test current_state(precise).logdensities[1] == BigFloat(gaussian_logdensity(initial[1]))
     end
 
     @testset "Matrix initialization and bulk stepping" begin
@@ -193,10 +200,16 @@ test_rng() = Philox4x((573, 19))
         @test step!(state, 0) === state
         @test_throws ArgumentError step!(state, -1)
         @test snapshot(state) == before
+        mixed = AbstractVector[Float32.([-1, -1]), [-1.0, 1.0], [1.0, -1.0], [1.0, 1.0]]
+        mixed_target(x) = x[1] < 0 ? Float32(gaussian_logdensity(x)) : gaussian_logdensity(x)
+        promoted = initialize(test_rng(), mixed_target, mixed)
+        converted = initialize(test_rng(), mixed_target, map(x -> Float64.(x), mixed))
+        @test sample!(promoted, 5) == sample!(converted, 5)
     end
 end
 
 include("norm.jl")
+include("gaussian.jl")
 include("batched.jl")
 include("kernel.jl")
 

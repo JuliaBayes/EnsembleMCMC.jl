@@ -22,6 +22,7 @@ validate_positions
 StretchMove
 DEMove
 DESnookerMove
+GaussianReplacementMove
 MoveMixture
 ```
 

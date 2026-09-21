@@ -32,11 +32,11 @@ jobs:
     env:
       JULIA_NUM_THREADS: ${{ matrix.threads }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.julia }}
-      - uses: julia-actions/cache@v3
+      - uses: julia-actions/cache@v3.3.0
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
         with:
@@ -65,11 +65,11 @@ jobs:
     env:
       JULIA_NUM_THREADS: '4'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
-      - uses: julia-actions/cache@v3
+      - uses: julia-actions/cache@v3.3.0
       - name: Install documentation environment
         run: julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'
       - name: Build documentation
@@ -79,7 +79,7 @@ jobs:
           name: documentation
           path: docs/build
           if-no-files-found: error
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@v5
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         with:
           path: docs/build
@@ -99,5 +99,5 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/deploy-pages@v4
+      - uses: actions/deploy-pages@v5
         id: deployment

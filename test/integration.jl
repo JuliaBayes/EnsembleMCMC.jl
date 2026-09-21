@@ -61,6 +61,11 @@ end
     @test (current.sweep_count, current.attempts, current.acceptances) ==
         (counters.sweep_count, counters.attempts, counters.acceptances)
     @test !any(current.accepted) && all(iszero, current.acceptance_probabilities)
+    saved = snapshot(state)
+    invalid = copy(saved.logdensities)
+    invalid[end] = NaN
+    @test_throws ArgumentError synchronize!(state, positions, invalid)
+    @test snapshot(state) == saved
 end
 
 @testset "Addressed sweeps and mixture phase" begin
@@ -81,6 +86,13 @@ end
     saved = snapshot(serial)
     @test_throws ArgumentError step!(serial, Threefry4x((1, 2, 3, 4)))
     @test snapshot(serial) == saved
+
+    serial = initialize(test_rng(), gaussian_logdensity, initial_walkers(); move=DEMove())
+    threaded = initialize(test_rng(), gaussian_logdensity, initial_walkers();
+        move=DEMove(), executor=ThreadedExecutor())
+    address = Philox4x((991, 11))
+    step!(serial, address; proposal_index=3)
+    @test snapshot(step!(threaded, address; proposal_index=3)) == snapshot(serial)
 end
 
 @testset "Nonfinite starts and degenerate transitions" begin
