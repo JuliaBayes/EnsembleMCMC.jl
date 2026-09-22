@@ -8,30 +8,14 @@ struct SerialExecutor <: AbstractExecutor end
 """
     ThreadedExecutor()
 
-Use Julia threads when proposal groups contain enough work to benefit.
-The first few groups calibrate task size and compare serial and threaded costs
-for each move. Calibration uses normal proposals, without extra density calls.
+Evaluate each proposal group in balanced, contiguous chunks using Julia threads.
+The task count is the smaller of the default-pool thread count and group size.
+There is no timing-based calibration. Use [`SerialExecutor`](@ref) for cheap targets.
 Groups still advance in order. The log-density function must support concurrent
 calls. A deterministic target gives the same trajectory as [`SerialExecutor`](@ref)
 for the same initial state, move, RNG, and walker IDs.
 """
 struct ThreadedExecutor <: AbstractExecutor end
-
-mutable struct _GroupSchedule
-    samples::Int
-    ntasks::Int
-    serial_ns::Float64
-    threaded_ns::Float64
-end
-struct _ThreadedExecutor <: AbstractExecutor
-    schedules::Vector{_GroupSchedule}
-end
-
-_prepare_executor(executor, nmoves) = executor
-function _prepare_executor(::ThreadedExecutor, nmoves)
-    samples = Threads.nthreads(:default) == 1 ? 8 : 0
-    return _ThreadedExecutor([_GroupSchedule(samples, 1, Inf, Inf) for _ in 1:nmoves])
-end
 
 """
     KernelExecutor()
@@ -264,7 +248,7 @@ function initialize(
     cycle_part = RNGPartition(owned_rng, 0:(typemax(Int16) - 2))
     weights = move isa MoveMixture ? copy(move.weights) : nothing
     return EnsembleState(
-        logdensity, moves, weights, _prepare_executor(executor, length(moves)), owned_rng, cycle_part,
+        logdensity, moves, weights, executor, owned_rng, cycle_part,
         [rngpart_createrng(typeof(rng)) for _ in 1:n], ids, sortperm(ids),
         positions, deepcopy(positions), logds, copy(logds),
         _batch_workspace(logdensity, positions, logds), fill(false, n), zeros(T, n),
@@ -374,43 +358,14 @@ function _evaluate_chunk!(task, ntasks, state, move, part, idx, group, complemen
     end
 end
 
-function _evaluate_chunks!(ntasks, state, move, part, idx, group, complement, acceptance_part)
+function _evaluate_group!(::ThreadedExecutor, state, move, part, move_index, proposal_index,
+    group, complement, acceptance_part)
+    ntasks = min(Threads.nthreads(:default), length(group))
     ntasks == 1 && return _evaluate_chunk!(1, 1, state, move, part,
-        idx, group, complement, acceptance_part)
+        proposal_index, group, complement, acceptance_part)
     @sync for task in Base.OneTo(ntasks)
         Threads.@spawn _evaluate_chunk!($task, $ntasks, state, move, part,
-            idx, group, complement, acceptance_part)
-    end
-end
-
-function _evaluate_group!(executor::_ThreadedExecutor, state, move, part, move_index, proposal_index,
-    group, complement, acceptance_part)
-    schedule = executor.schedules[move_index]
-    sample = schedule.samples
-    ntasks = sample < 4 ? 1 : min(schedule.ntasks, length(group))
-    # Warm both execution paths before measuring. Use minima to exclude GC and
-    # scheduler pauses from the estimate of useful work per walker.
-    measuring = sample in (2, 3, 5, 6, 7)
-    start = measuring ? time_ns() : UInt64(0)
-    _evaluate_chunks!(ntasks, state, move, part, proposal_index, group, complement, acceptance_part)
-    sample == 8 && return nothing
-    if measuring
-        elapsed = (time_ns() - start) / length(group)
-        if sample < 4
-            schedule.serial_ns = min(schedule.serial_ns, elapsed)
-        else
-            schedule.threaded_ns = min(schedule.threaded_ns, elapsed)
-        end
-    end
-    schedule.samples = sample + 1
-    if sample == 3
-        # Target at least 50 microseconds of serial work per task, then confirm
-        # that the chosen task count actually beats serial execution.
-        schedule.ntasks = clamp(floor(Int, schedule.serial_ns * length(group) / 50_000),
-            1, min(Threads.nthreads(:default), length(group)))
-        schedule.ntasks == 1 && (schedule.samples = 8)
-    elseif sample == 7 && schedule.threaded_ns >= 0.8schedule.serial_ns
-        schedule.ntasks = 1
+            proposal_index, group, complement, acceptance_part)
     end
     return nothing
 end

@@ -13,18 +13,10 @@
         initial = initial_walkers()
         permutation = reverse(eachindex(initial))
         move = MoveMixture((GaussianReplacementMove(), DEMove()), [2, 1]; schedule=:cycle)
-        # Enough deterministic target work to exercise threaded group calibration.
-        target(x) = begin
-            value = gaussian_logdensity(x)
-            for _ in 1:5_000
-                value += eps(Float64) * sin(value)
-            end
-            value
-        end
-        reference = initialize(test_rng(), target, initial; move)
-        threaded = initialize(test_rng(), target, initial;
+        reference = initialize(test_rng(), gaussian_logdensity, initial; move)
+        threaded = initialize(test_rng(), gaussian_logdensity, initial;
             move, executor=ThreadedExecutor())
-        reordered = initialize(test_rng(), target, initial[permutation];
+        reordered = initialize(test_rng(), gaussian_logdensity, initial[permutation];
             move, walker_ids=collect(permutation))
         expected = sample!(reference, 18)
         @test sample!(threaded, 18) == expected

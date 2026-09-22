@@ -83,9 +83,23 @@ end
 _prepare_group!(move::_AllocatedGaussianMove, state, group, complement) =
     _prepare_gaussian_group!(state.batch_workspace, move, state, only(complement))
 
+_gaussian_ldiv!(factor, scratch) = ldiv!(LowerTriangular(factor), scratch)
+function _gaussian_ldiv!(factor::StridedMatrix{T}, scratch::StridedVector{T}) where {T<:Union{Float32,Float64}}
+    length(scratch) > 128 && return ldiv!(LowerTriangular(factor), scratch)
+    # Small forward solves avoid BLAS call overhead and visit contiguous columns.
+    @inbounds for j in eachindex(scratch)
+        x = scratch[j] / factor[j, j]
+        scratch[j] = x
+        @simd for i in (j + 1):length(scratch)
+            scratch[i] -= factor[i, j] * x
+        end
+    end
+    return scratch
+end
+
 function _gaussian_squared_distance!(scratch, position, move, scale)
     @. scratch = position / scale - move.mean
-    ldiv!(LowerTriangular(move.factor), scratch)
+    _gaussian_ldiv!(move.factor, scratch)
     return sum(abs2, scratch)
 end
 

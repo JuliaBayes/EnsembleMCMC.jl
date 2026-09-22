@@ -43,7 +43,13 @@ test_rng() = Philox4x((573, 19))
         move = MoveMixture((StretchMove(), DEMove(), DESnookerMove()), [1, 1, 1]; schedule=:cycle)
         reference = initialize(test_rng(), gaussian_logdensity, initial; move)
         calls = Threads.Atomic{Int}(0)
-        counted_target(x) = (Threads.atomic_add!(calls, 1); gaussian_logdensity(x))
+        worker_calls = Threads.Atomic{Int}(0)
+        caller = current_task()
+        counted_target(x) = begin
+            Threads.atomic_add!(calls, 1)
+            current_task() !== caller && Threads.atomic_add!(worker_calls, 1)
+            gaussian_logdensity(x)
+        end
         threaded = initialize(test_rng(), counted_target, initial;
             move, executor=ThreadedExecutor())
         reordered = initialize(test_rng(), gaussian_logdensity, initial[permutation];
@@ -51,6 +57,7 @@ test_rng() = Philox4x((573, 19))
         expected = sample!(reference, 30)
         actual = sample!(threaded, 30)
         @test calls[] == 31length(initial)
+        @test worker_calls[] == (Threads.nthreads(:default) > 1 ? 30length(initial) : 0)
         reordered_draws = sample!(reordered, 30)
         @test actual == expected
         @test reordered_draws.positions[:, permutation, :] == expected.positions
