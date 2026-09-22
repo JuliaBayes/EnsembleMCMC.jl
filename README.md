@@ -5,7 +5,7 @@
 [![Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://juliabayes.org/EnsembleMCMC.jl/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE.md)
 
-Ensemble MCMC with Stretch, differential-evolution, and snooker moves.
+Ensemble MCMC with Stretch, differential-evolution, snooker, and Gaussian replacement moves.
 Supports fixed move mixtures, threaded evaluation, and resumable sampling.
 
 ```julia

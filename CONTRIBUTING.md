@@ -26,10 +26,10 @@ The current Julia/Linux job collects source coverage, retains `lcov.info` as a
 `coverage` artifact, and uploads it to Codecov using GitHub OIDC. Coverage measures
 executed lines, not statistical correctness. No coverage percentage target is set.
 
-## Before the first release
+## Before a release
 
 - Confirm every CI job passes on the exact release commit.
-- Review the exported interface and experimental 0.1 compatibility policy.
+- Review the exported interface and document breaking changes in the experimental 0.0.x series.
 - Update the changelog from unreleased to the chosen version and date.
 - Confirm `Project.toml` matches that version.
 - Confirm repository visibility and documentation hosting before registration.

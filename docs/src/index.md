@@ -2,11 +2,18 @@
 
 EnsembleMCMC samples a log density with coupled walkers. It provides Stretch,
 differential-evolution (DE), snooker, and Gaussian replacement moves, fixed mixtures, and threaded
-evaluation. Julia 1.10 or later is required. The package is not registered yet.
+evaluation. Julia 1.10 or later is required.
 
 ## Installation
 
-Until registration, install from the repository with an account that can access it:
+Install the registered release:
+
+```julia
+using Pkg
+Pkg.add("EnsembleMCMC")
+```
+
+For features not yet in the registered release, install the development version:
 
 ```julia
 using Pkg
