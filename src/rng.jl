@@ -37,7 +37,7 @@ function set_rng!(rng::R, rngpart::RNGPartition{R}, i::Integer) where R <: Abstr
     mod_partcounters = _rngpart_inc_partctrs(rngpart.partctrsbase, rngpart.depth, j)
     mod_depth = rngpart.depth + 1
 
-    Random.seed!(rng, rngpart.seed)
+    _rngpart_setkey!(rng, rngpart.seed)
     rngpart_setpartctrs!(rng, mod_partcounters, mod_depth)
 
     rng
@@ -71,6 +71,19 @@ end
 rngpart_createrng(::Type{T}) where {T <: Philox4x} = T(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
 rngpart_getseed(rng::Philox4x) = (rng.key1, rng.key2)
+
+# Match `seed!` without its output block, which `rngpart_setpartctrs!` recomputes.
+# Random123 `seed!` resets the buffer position of Philox4x but not of Threefry4x.
+function _rngpart_setkey!(rng::Philox4x{T}, seed) where {T}
+    rng.key1, rng.key2 = seed[1] % T, seed[2] % T
+    rng.p = 0
+    return rng
+end
+
+function _rngpart_setkey!(rng::Threefry4x{T}, seed) where {T}
+    rng.key1, rng.key2, rng.key3, rng.key4 = seed[1] % T, seed[2] % T, seed[3] % T, seed[4] % T
+    return rng
+end
 
 rngpart_createrng(::Type{T}) where {T <: Threefry4x} = T(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
