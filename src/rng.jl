@@ -61,19 +61,13 @@ end
 
 rngpart_depth(rng::Union{Philox4x,Threefry4x}) = rngpart_getpartctrs(rng).depth
 
-# `seed!` keeps the Threefry4x buffer position, so reset it to act like a new RNG.
-function rngpart_setfresh!(rng::R, rngpart::RNGPartition{R}, i::Integer) where {R<:Union{Philox4x,Threefry4x}}
-    set_rng!(rng, rngpart, i)
-    rng.p = 0
-    return rng
-end
-
 rngpart_createrng(::Type{T}) where {T <: Philox4x} = T(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
 rngpart_getseed(rng::Philox4x) = (rng.key1, rng.key2)
 
 # Match `seed!` without its output block, which `rngpart_setpartctrs!` recomputes.
-# Random123 `seed!` resets the buffer position of Philox4x but not of Threefry4x.
+# Reset the buffer position for both types, so a draw depends only on the stream address.
+# Random123 `seed!` keeps the Threefry4x position.
 function _rngpart_setkey!(rng::Philox4x{T}, seed) where {T}
     rng.key1, rng.key2 = seed[1] % T, seed[2] % T
     rng.p = 0
@@ -82,6 +76,7 @@ end
 
 function _rngpart_setkey!(rng::Threefry4x{T}, seed) where {T}
     rng.key1, rng.key2, rng.key3, rng.key4 = seed[1] % T, seed[2] % T, seed[3] % T, seed[4] % T
+    rng.p = 0
     return rng
 end
 

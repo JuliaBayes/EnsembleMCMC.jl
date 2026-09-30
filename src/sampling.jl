@@ -393,7 +393,7 @@ function _select_move(weights::AbstractVector{T}, rng, step) where {T<:AbstractF
 end
 
 function _groups(rng, move, part, proposal_idx, order)
-    rngpart_setfresh!(rng, part, _stream_index(4, proposal_idx))
+    set_rng!(rng, part, _stream_index(4, proposal_idx))
     permutation = randperm(rng, length(order))
     ngroups = group_count(move)
     if ngroups == 2
@@ -569,7 +569,7 @@ function _sweep!(state, part, proposal_index)
         throw(ArgumentError("RNG partition is too deep for walker streams"))
     # The owned RNG is re-keyed at the start of each standalone sweep, so it can serve as scratch.
     scratch = state.rng
-    rngpart_setfresh!(scratch, part, isnothing(proposal_index) ?
+    set_rng!(scratch, part, isnothing(proposal_index) ?
         _stream_index(1, 1) : _stream_index(2, proposal_index))
     idx = _select_move(state.weights, scratch, state.step + 1)
     stream_index = isnothing(proposal_index) ? idx : proposal_index
