@@ -33,9 +33,9 @@ function _evaluate_group!(::KernelExecutor, state, fitted::_FittedGaussianMove,
     backend = KA.get_backend(w.positions)
     if !fitted.valid
         w.host_status[1] = 0
-        _reject_gaussian_group_kernel!(backend, 1)(
+        _reject_gaussian_group_kernel!(backend, 64)(
             w.candidates, w.positions, state.candidate_logdensities, state.logdensities,
-            state.accepted, state.acceptance_probabilities, w.controls, w.valid, w.status, n; ndrange=1)
+            state.accepted, state.acceptance_probabilities, w.controls, w.valid; ndrange=n)
         return nothing
     end
 
@@ -53,9 +53,7 @@ function _evaluate_group!(::KernelExecutor, state, fitted::_FittedGaussianMove,
         w.logh, w.valid, state.accepted, state.candidate_logdensities,
         state.logdensities, state.acceptance_probabilities, move.anchor, move.mean, move.factor,
         move.scratch, fitted.scale; ndrange=n)
-    _compact_kernel!(backend, 1)(w.indices, w.status, w.valid, n; ndrange=1)
-    copyto!(w.host_status, 1, w.status, 1, 1)
-    KA.synchronize(backend)
+    _compact!(w, n)
     return nothing
 end
 
@@ -67,21 +65,17 @@ end
 
 KA.@kernel function _reject_gaussian_group_kernel!(
     candidates, positions, candidate_logdensities, logdensities,
-    accepted, acceptance_probabilities, controls, valid, status, n,
+    accepted, acceptance_probabilities, controls, valid,
 )
-    index = @index(Global, Linear)
-    for j in 1:n
-        walker = @inbounds controls[1, j]
-        @inbounds accepted[walker] = false
-        @inbounds valid[j] = false
-        @inbounds candidate_logdensities[walker] = logdensities[walker]
-        @inbounds acceptance_probabilities[walker] = zero(eltype(acceptance_probabilities))
-        for coordinate in axes(positions, 1)
-            @inbounds candidates[coordinate, walker] = positions[coordinate, walker]
-        end
+    j = @index(Global, Linear)
+    walker = @inbounds controls[1, j]
+    @inbounds accepted[walker] = false
+    @inbounds valid[j] = false
+    @inbounds candidate_logdensities[walker] = logdensities[walker]
+    @inbounds acceptance_probabilities[walker] = zero(eltype(acceptance_probabilities))
+    for coordinate in axes(positions, 1)
+        @inbounds candidates[coordinate, walker] = positions[coordinate, walker]
     end
-    @inbounds status[1] = zero(eltype(status))
-    @inbounds status[2] = zero(eltype(status))
 end
 
 KA.@kernel function _propose_gaussian_kernel!(
