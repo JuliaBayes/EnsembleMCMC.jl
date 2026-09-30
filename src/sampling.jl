@@ -6,16 +6,29 @@ Evaluate walker proposals serially within each group of a sweep.
 """
 struct SerialExecutor <: AbstractExecutor end
 """
-    ThreadedExecutor()
+    ThreadedExecutor(; min_chunk=1)
 
 Evaluate each proposal group in balanced, contiguous chunks using Julia threads.
-The task count is the smaller of the default-pool thread count and group size.
-There is no timing-based calibration. Use [`SerialExecutor`](@ref) for cheap targets.
-Groups still advance in order. The log-density function must support concurrent
-calls. A deterministic target gives the same trajectory as [`SerialExecutor`](@ref)
-for the same initial state, move, RNG, and walker IDs.
+The task count is the default-pool thread count, reduced so that each task gets
+at least `min_chunk` walkers, and at least one. There is no timing-based
+calibration. Groups still advance in order. The log-density function must support
+concurrent calls. A deterministic target gives the same trajectory as
+[`SerialExecutor`](@ref) for the same initial state, move, RNG, and walker IDs,
+for any `min_chunk`. An error in the target is rethrown unwrapped, as with
+[`SerialExecutor`](@ref), after all tasks of the group finish.
+
+Each group costs a task spawn and join of a few microseconds per task. Use
+[`SerialExecutor`](@ref) when one walker update costs less than about a
+microsecond, or raise `min_chunk` so that each task does at least tens of
+microseconds of work.
 """
-struct ThreadedExecutor <: AbstractExecutor end
+struct ThreadedExecutor <: AbstractExecutor
+    min_chunk::Int
+    function ThreadedExecutor(; min_chunk::Integer=1)
+        min_chunk >= 1 || throw(ArgumentError("min_chunk must be positive"))
+        return new(min_chunk)
+    end
+end
 
 """
     KernelExecutor()
@@ -30,7 +43,8 @@ struct KernelExecutor <: AbstractExecutor end
 """
     MoveMixture(moves, weights; schedule=:random)
 
-Select one move per complete sweep. `schedule=:random` gives fixed random
+Select one move per complete sweep. `weights` is a vector or tuple of reals.
+`schedule=:random` gives fixed random
 selection probabilities after normalization, regardless of weight types.
 `schedule=:cycle` gives a repeating weighted cycle in component order and
 requires integer-valued weights. Weights must be finite and nonnegative,
@@ -39,7 +53,9 @@ with at least one positive weight. The schedule and weights do not adapt.
 struct MoveMixture{M<:Tuple,W<:AbstractVector}
     moves::M
     weights::W
-    function MoveMixture(moves, weights::AbstractVector{<:Real}; schedule::Symbol=:random)
+    function MoveMixture(moves, weights::Union{AbstractVector{<:Real},Tuple{Vararg{Real}}};
+        schedule::Symbol=:random)
+        weights isa Tuple && (weights = collect(_promoted_values(Real[weights...])))
         Base.require_one_based_indexing(weights)
         ms = Tuple(moves)
         !isempty(ms) && all(m -> m isa AbstractEnsembleMove, ms) ||
@@ -68,8 +84,8 @@ const _COMPANION_PURPOSE = 5
 const _SCALE_PURPOSE = 6
 
 _stream_index(purpose, proposal) = (purpose - 1) * _PROPOSALS_PER_PURPOSE + proposal
-_walker_rngpart(part, purpose, proposal) = RNGPartition(
-    AbstractRNG(part, _stream_index(purpose, proposal)), Base.OneTo(typemax(Int32) - 2),
+_walker_rngpart(part, purpose, proposal) = rngpart_subpartition(
+    part, _stream_index(purpose, proposal), Base.OneTo(typemax(Int32) - 2),
 )
 
 mutable struct EnsembleState{F,M,W,E,R,P,V,L,B,A,Q}
@@ -107,8 +123,9 @@ move selected for the latest sweep; `sweep_count` counts completed sweeps.
 Before the first sweep, both scalars and all counts are zero, and `accepted`
 is false for every walker. `candidates`, `candidate_logdensities`, and
 `acceptance_probabilities` describe the last attempted transition, including
-rejections. Before stepping or after synchronization they describe the current
-points with zero acceptance probabilities and `move_index == 0`.
+rejections; a NaN candidate density is recorded as -Inf. Before stepping or after
+synchronization they describe the current points with zero acceptance
+probabilities and `move_index == 0`.
 
 Treat all borrowed arrays as read-only. Consume them before the next mutation
 of the state. Scalar metadata is captured at query time, not updated live.
@@ -123,6 +140,18 @@ function current_state(state::EnsembleState)
         walker_ids=state.walker_ids,
         attempts=state.attempts, acceptances=state.accepts,
         move_index=state.active_index, sweep_count=state.step)
+end
+
+"""
+    acceptance_rate(state)
+
+Return the cumulative acceptance rate of each move as a `Vector{Float64}`, in
+mixture component order. A move with no attempts yet has rate `NaN`.
+[`synchronize!`](@ref) does not reset the counts.
+"""
+function acceptance_rate(state::EnsembleState)
+    current = current_state(state)
+    return [a / n for (a, n) in zip(current.acceptances, current.attempts)]
 end
 
 """
@@ -166,8 +195,14 @@ Base.show(io::IO, ::MIME"text/plain", state::EnsembleState) = show(io, state)
 
 Check that a vector of coordinate vectors or a coordinate-by-walker matrix has
 positive, matching dimensions, finite real coordinates, and full affine rank.
-Use the floating-point coordinate type for the rank tolerance. Return `nothing`
-without changing the input. Rank validation uses an owned host matrix.
+Return `nothing` without changing the input. Rank validation uses an owned host
+matrix of the positions relative to the first walker, in the floating-point
+coordinate type `T`. Singular values at or below `max(d, n) * eps(T)` times the
+largest one count as zero, as in `LinearAlgebra.rank`. A full-rank ensemble whose
+smallest-to-largest singular value ratio is below `sqrt(eps(T))` gives a warning,
+because linear moves then stay close to a lower-dimensional subspace.
+Types without an SVD, such as `BigFloat`, use the diagonal of a pivoted QR
+factorization as the singular value estimate.
 Call this after retry initialization, before synchronizing replacement positions.
 Move-specific walker requirements are checked by [`initialize`](@ref).
 """
@@ -182,15 +217,24 @@ function validate_positions(positions::AbstractVector)
     centered = Matrix{T}(reduce(hcat, positions))
     all(isfinite, centered) || throw(ArgumentError("Coordinates must be finite"))
     centered .-= centered[:, 1]
-    rank(centered; rtol = max(size(centered)...) * eps(T)) == d ||
-        throw(ArgumentError("Walkers must have full affine rank"))
+    values = _singular_values(centered)
+    tolerance = max(size(centered)...) * eps(T) * first(values)
+    count(>(tolerance), values) == d || throw(ArgumentError("Walkers must have full affine rank"))
+    ratio = values[d] / first(values)
+    ratio < sqrt(eps(T)) && @warn string("Walkers are nearly degenerate: the singular value ratio ",
+        Float64(ratio), " is below sqrt(eps($T)). Linear moves stay close to a subspace.")
     return nothing
 end
+
+_singular_values(x::Matrix{<:LinearAlgebra.BlasFloat}) = svdvals!(x)
+_singular_values(x) = sort!(abs.(diag(qr!(x, ColumnNorm()).R)); rev=true)
 
 function validate_positions(positions::AbstractMatrix)
     Base.require_one_based_indexing(positions)
     return validate_positions(eachcol(positions))
 end
+
+const _SUPPORTED_RNGS = "Random123 Philox4x or Threefry4x with UInt64 counters, such as Philox4x((seed, chain))"
 
 """
     initialize(rng, logdensity, initial; move=StretchMove(), executor=SerialExecutor(),
@@ -198,29 +242,43 @@ end
 
 Create one ensemble from a vector of finite coordinate vectors or a matrix
 with axes (coordinate, walker). The coordinates must have full affine rank
-and initial log densities other than NaN or +Inf. The state owns
-copies of coordinates and RNG. Supported RNGs are Random123 Philox4x/Threefry4x
-with UInt64 counters.
-Use independent RNG seeds or streams for independent ensembles.
+and initial log densities other than NaN or +Inf. Initial values of -Inf are
+allowed with a warning: stretch, DE and snooker walkers far outside the support
+may never recover. The state owns copies of coordinates and RNG.
+
+Supported RNGs are Random123 `Philox4x` and `Threefry4x` with UInt64 counters.
+`initialize` copies the RNG and does not advance it, so two states made from the
+same RNG object give identical chains. For independent ensembles, use distinct
+keys, for example `Philox4x((seed, chain))` for `chain = 1, 2, ...`.
+Standalone [`step!`](@ref) needs four free partition levels, so an RNG derived
+through at most one partition level (depth 2 or less) is required.
 
 Supply `logdensities` to reuse cached values without evaluating the target.
 The vector must match walker order and contain real values other than NaN or
 +Inf. Values are copied and promoted independently of coordinate precision.
 The caller must ensure they equal the target at the initial coordinates.
 
-Walker IDs default to `1:nwalkers` and remain fixed throughout the run.
-The density must not mutate its input. A scalar density must support concurrent
-calls with ThreadedExecutor; a batched callback controls its own parallelism.
-Do not mutate state fields.
+Walker IDs default to the walker indices `1:nwalkers` and remain fixed throughout
+the run. The density must not mutate its input. A scalar density must support
+concurrent calls with ThreadedExecutor; a batched callback controls its own
+parallelism. During sampling, a candidate log density of NaN rejects the
+candidate like -Inf, and +Inf throws a `DomainError`. Do not mutate state fields.
 Use [`current_state`](@ref) for borrowed inspection and [`snapshot`](@ref) for copies.
 """
 function initialize(
     rng::Union{Philox4x{UInt64},Threefry4x{UInt64}}, logdensity, initial::AbstractVector;
     move = StretchMove(), executor::AbstractExecutor = SerialExecutor(),
     walker_ids = collect(eachindex(initial)),
-    logdensities::Union{Nothing,AbstractVector} = nothing,
+    logdensities::Union{Nothing,AbstractVector} = nothing, kwargs...,
 )
+    isempty(kwargs) || throw(ArgumentError(
+        "Unsupported keyword argument(s): $(join(keys(kwargs), ", "))"))
     executor isa KernelExecutor && throw(ArgumentError("KernelExecutor requires an initial matrix"))
+    move isa Union{AbstractEnsembleMove,MoveMixture} || throw(ArgumentError(
+        "move must be an ensemble move or a MoveMixture, not $(typeof(move))"))
+    depth = rngpart_depth(rng)
+    depth <= 2 || throw(ArgumentError(
+        "RNG partition depth $depth is too deep; standalone stepping needs depth 2 or less"))
     validate_positions(initial)
     d = length(first(initial))
     T = float(_coordinate_type(initial))
@@ -229,21 +287,23 @@ function initialize(
         (prepare_move(move, T, d),)
     length(moves) <= _PROPOSALS_PER_PURPOSE || throw(ArgumentError("Too many mixture components"))
     n = length(positions)
-    n >= maximum(m -> minimum_walkers(m, d), moves) ||
-        throw(ArgumentError("Too few walkers for the dimension and selected moves"))
+    required = maximum(m -> minimum_walkers(m, d), moves)
+    n >= required || throw(ArgumentError(
+        "Too few walkers: $n given, the selected moves need $required in $d dimensions"))
     moves = map(m -> _allocate_move(m, positions), moves)
+    length(walker_ids) == n && all(id -> id isa Integer && 1 <= id <= typemax(Int32) - 2, walker_ids) &&
+        allunique(walker_ids) ||
+        throw(ArgumentError("Walker IDs must be $n distinct integers in 1:$(typemax(Int32) - 2)"))
     ids = collect(Int, walker_ids)
-    length(ids) == n && length(unique(ids)) == n &&
-        all(id -> 1 <= id <= typemax(Int32) - 2, ids) ||
-        throw(ArgumentError("Walker IDs must be distinct positive stream indices"))
     values = if isnothing(logdensities)
-        map(x -> _checked_logdensity(logdensity, x), positions)
+        [_checked_initial_logdensity(logdensity(x), i) for (i, x) in enumerate(positions)]
     else
         Base.require_one_based_indexing(logdensities)
         length(logdensities) == n || throw(DimensionMismatch("Walker and log-density counts must agree"))
-        map(_checked_logdensity_value, logdensities)
+        [_checked_initial_logdensity(v, i) for (i, v) in enumerate(logdensities)]
     end
     logds = _promoted_values(values)
+    _warn_negative_infinity(logds)
     owned_rng = copy(rng)
     cycle_part = RNGPartition(owned_rng, 0:(typemax(Int16) - 2))
     weights = move isa MoveMixture ? copy(move.weights) : nothing
@@ -263,18 +323,37 @@ function initialize(rng::Union{Philox4x{UInt64},Threefry4x{UInt64}}, logdensity,
     return initialize(rng, logdensity, eachcol(initial); executor, kwargs...)
 end
 
-_checked_logdensity(f, x) = _checked_logdensity_value(f(x))
+function initialize(rng, logdensity, initial; kwargs...)
+    rng isa Union{Philox4x{UInt64},Threefry4x{UInt64}} ||
+        throw(ArgumentError("Unsupported RNG $(typeof(rng)); use $_SUPPORTED_RNGS"))
+    throw(ArgumentError("Initial positions must be a vector of coordinate vectors or a coordinate-by-walker matrix"))
+end
 
-function _checked_logdensity_value(value)
-    value isa Real || throw(ArgumentError("Log density must return a real number"))
-    (isnan(value) || value == Inf) && throw(DomainError(value, "Invalid log density"))
+function _checked_initial_logdensity(value, i)
+    value isa Real || throw(ArgumentError("Log density must return a real number, got $(typeof(value)) for walker $i"))
+    (isnan(value) || value == Inf) &&
+        throw(DomainError(value, "Invalid initial log density for walker $i: NaN and +Inf are not allowed"))
     return float(value)
 end
 
-Base.@inline function _accept_candidate!(state, i, log_hastings, logd, acceptance_part)
+function _warn_negative_infinity(logds)
+    k = count(==(-Inf), logds)
+    if k == length(logds)
+        @warn "All $k initial log densities are -Inf. Walkers cannot move until a candidate has a finite density."
+    elseif k > 0
+        @warn string("$k of $(length(logds)) initial log densities are -Inf. Stretch, DE and snooker ",
+            "walkers far outside the support may never recover.")
+    end
+    return nothing
+end
+
+Base.@inline function _accept_candidate!(state, i, log_hastings, logd, acceptance_part, batched=false)
     stored_logd = convert(eltype(state.logdensities), logd)
-    (isnan(stored_logd) || stored_logd == Inf) &&
-        throw(DomainError(stored_logd, "Invalid stored log density"))
+    if isnan(stored_logd)
+        stored_logd = convert(eltype(state.logdensities), -Inf)
+    elseif stored_logd == Inf
+        _invalid_candidate(state, i, stored_logd, batched)
+    end
     state.candidate_logdensities[i] = stored_logd
     T = eltype(state.positions[i])
     logratio = convert(T, log_hastings + stored_logd - state.logdensities[i])
@@ -284,6 +363,13 @@ Base.@inline function _accept_candidate!(state, i, log_hastings, logd, acceptanc
     state.acceptance_probabilities[i] = probability
     state.accepted[i] = rand(rng, T) < probability
     return nothing
+end
+
+@noinline function _invalid_candidate(state, i, value, batched)
+    location = "walker $i (ID $(state.walker_ids[i])) in sweep $(state.step + 1)"
+    throw(DomainError(value, batched ?
+        "Invalid batched log density for $location: +Inf is not allowed and batch! must fill every value" :
+        "Invalid log density for $location: candidate values must not be +Inf"))
 end
 
 _select_move(::Nothing, rng, step) = 1
@@ -306,8 +392,8 @@ function _select_move(weights::AbstractVector{T}, rng, step) where {T<:AbstractF
     return something(findlast(>(0), weights))
 end
 
-function _groups(move, part, proposal_idx, order)
-    rng = AbstractRNG(part, _stream_index(4, proposal_idx))
+function _groups(rng, move, part, proposal_idx, order)
+    rngpart_setfresh!(rng, part, _stream_index(4, proposal_idx))
     permutation = randperm(rng, length(order))
     ngroups = group_count(move)
     if ngroups == 2
@@ -358,20 +444,38 @@ function _evaluate_chunk!(task, ntasks, state, move, part, idx, group, complemen
     end
 end
 
-function _evaluate_group!(::ThreadedExecutor, state, move, part, move_index, proposal_index,
+function _evaluate_group!(executor::ThreadedExecutor, state, move, part, move_index, proposal_index,
     group, complement, acceptance_part)
-    ntasks = min(Threads.nthreads(:default), length(group))
+    ntasks = clamp(fld(length(group), executor.min_chunk), 1, Threads.nthreads(:default))
     ntasks == 1 && return _evaluate_chunk!(1, 1, state, move, part,
         proposal_index, group, complement, acceptance_part)
-    @sync for task in Base.OneTo(ntasks)
-        Threads.@spawn _evaluate_chunk!($task, $ntasks, state, move, part,
+    tasks = map(Base.OneTo(ntasks)) do task
+        Threads.@spawn _evaluate_chunk!(task, ntasks, state, move, part,
             proposal_index, group, complement, acceptance_part)
     end
+    _wait_tasks(tasks)
+    return nothing
+end
+
+# Wait for every task before throwing, and rethrow the first task error unwrapped
+# so that callers see the same exception type as with SerialExecutor.
+function _wait_tasks(tasks)
+    failure = nothing
+    for task in tasks
+        try
+            wait(task)
+        catch err
+            isnothing(failure) && (failure = err isa TaskFailedException ? err.task.exception : err)
+        end
+    end
+    isnothing(failure) || throw(failure)
     return nothing
 end
 
 Base.@inline function _evaluate_candidate!(::Nothing, state, i, log_hastings, acceptance_part)
-    logd = _checked_logdensity(state.logdensity, state.candidates[i])
+    logd = state.logdensity(state.candidates[i])
+    logd isa Real || throw(ArgumentError(
+        "Log density must return a real number, got $(typeof(logd)) for walker $i"))
     return _accept_candidate!(state, i, log_hastings, logd, acceptance_part)
 end
 function _evaluate_candidate!(workspace::BatchWorkspace, state, i, log_hastings, acceptance_part)
@@ -392,13 +496,14 @@ function _evaluate_batch!(workspace::BatchWorkspace, state, group, acceptance_pa
     iszero(count) && return nothing
     values = view(workspace.values, 1:count)
     positions = view(workspace.positions, :, 1:count)
-    fill!(values, NaN)
+    # +Inf is invalid, so unfilled entries still raise an error while NaN rejects.
+    fill!(values, Inf)
     state.logdensity.batch!(values, positions)
     k = 0
     for i in group
         state.accepted[i] || continue
         k += 1
-        _accept_candidate!(state, i, workspace.log_hastings[i], values[k], acceptance_part)
+        _accept_candidate!(state, i, workspace.log_hastings[i], values[k], acceptance_part, true)
     end
     return nothing
 end
@@ -412,8 +517,11 @@ a history. Mutate and return the state. Zero sweeps leave a valid state unchange
 Each sweep selects one move and updates every walker once, in ordered groups
 against frozen complements. Use [`current_state`](@ref) to consume each sweep
 without a copy, or [`snapshot`](@ref) to retain it.
-An exception during a sweep invalidates the state. Initialize a fresh state
-after correcting the target instead of resuming a partially completed sweep.
+A candidate log density of NaN rejects the candidate. An exception during a
+sweep, including the `DomainError` for a candidate density of +Inf, invalidates
+the state. Initialize a fresh state after correcting the target instead of
+resuming a partially completed sweep. Argument and RNG-depth errors raised before
+the sweep starts leave the state valid.
 """
 step!(state::EnsembleState) = _step!(state, state.batch_workspace)
 _step!(state, workspace, args...) = _step!(state, args...)
@@ -432,15 +540,20 @@ end
 
 Advance one sweep using an externally addressed RNG without changing `rng`.
 The RNG must match the initialization RNG type and leave two partition levels
-for purposes and walkers. `proposal_index`
-selects disjoint proposal streams. Inner mixtures use purpose 2 for selection,
-leaving purpose 1 for an outer mixture. Cyclic mixtures count calls to this state.
-The supplied address replaces the standalone cycle/step address for this sweep.
+for purposes and walkers, so its partition depth must be 4 or less.
+`proposal_index` in `1:$(_PROPOSALS_PER_PURPOSE)` selects disjoint proposal streams.
+Inner mixtures use purpose 2 for selection, leaving purpose 1 for an outer mixture.
+The supplied address replaces the standalone cycle/step address for this sweep only.
+The sweep still counts: `sweep_count` advances, so a later standalone
+`step!(state)` uses the next step address, and a cyclic mixture moves to its
+next phase.
 """
 function step!(state::EnsembleState, rng::AbstractRNG; proposal_index::Integer=1)
     typeof(rng) === typeof(state.rng) || throw(ArgumentError("RNG type must match the ensemble state"))
     1 <= proposal_index <= _PROPOSALS_PER_PURPOSE ||
         throw(ArgumentError("Proposal index is outside the stream range"))
+    depth = rngpart_depth(rng)
+    depth <= 4 || throw(ArgumentError("RNG partition depth $depth is too deep; step!(state, rng) needs depth 4 or less"))
     return _step!(state, state.batch_workspace, rng, proposal_index)
 end
 
@@ -452,15 +565,19 @@ end
 function _sweep!(state, part, proposal_index)
     state.valid || throw(ArgumentError("Cannot resume a state after a failed sweep"))
     state.step < typemax(Int32) - 2 || throw(ArgumentError("RNG step range exhausted"))
-    state.valid = false
-    selection_rng = isnothing(proposal_index) ?
-        AbstractRNG(part, _stream_index(1, 1)) :
-        AbstractRNG(part, _stream_index(2, proposal_index))
-    idx = _select_move(state.weights, selection_rng, state.step + 1)
+    part.depth + 2 <= length(part.partctrsbase) ||
+        throw(ArgumentError("RNG partition is too deep for walker streams"))
+    # The owned RNG is re-keyed at the start of each standalone sweep, so it can serve as scratch.
+    scratch = state.rng
+    rngpart_setfresh!(scratch, part, isnothing(proposal_index) ?
+        _stream_index(1, 1) : _stream_index(2, proposal_index))
+    idx = _select_move(state.weights, scratch, state.step + 1)
     stream_index = isnothing(proposal_index) ? idx : proposal_index
     move = state.moves[idx]
-    groups = _groups(move, part, stream_index, state.walker_order)
+    groups = _groups(scratch, move, part, stream_index, state.walker_order)
     acceptance_part = _walker_rngpart(part, 3, stream_index)
+    # Everything above leaves the ensemble untouched, so a failure there keeps the state valid.
+    state.valid = false
 
     for active in eachindex(groups)
         group = groups[active]
@@ -499,23 +616,33 @@ function step!(state::EnsembleState, nsweeps::Integer)
 end
 
 """
-    sample!(state, nsweeps)
+    sample!(state, nsamples; thin=1)
 
-Advance and collect complete sweeps. Positions have axes (coordinate, walker,
-sweep). Rejections repeat the current state. Returned arrays own their storage.
-Each state represents one coupled ensemble, not independent walker chains.
+Advance `nsamples * thin` complete sweeps and store the state after every
+`thin`-th sweep. Positions have axes (coordinate, walker, sample). Rejections
+repeat the current state. Returned arrays own their storage. Each state
+represents one coupled ensemble, not independent walker chains.
 
 Return a named tuple with `positions`, `logdensities` and `accepted` (the latter
-two indexed by walker and sweep), `move_indices` (one move index per sweep), and
-`walker_ids` (one ID per walker). The initial positions are not included.
+two indexed by walker and sample), `move_indices` (one move index per sample), and
+`walker_ids` (one ID per walker). `accepted` and `move_indices` describe the
+stored sweep only; the cumulative counts of [`current_state`](@ref) include
+every sweep. The initial positions are not included.
+
+The history is allocated up front and returned only on success. An exception
+during a sweep invalidates the state and loses the collected history. For
+checkpoints, progress output or custom storage, call [`step!`](@ref) in a loop
+and keep [`snapshot`](@ref)s or read [`current_state`](@ref) after each sweep.
 """
-function sample!(state::EnsembleState, nsweeps::Integer)
-    nsweeps >= 0 || throw(ArgumentError("Sweep count must be nonnegative"))
+function sample!(state::EnsembleState, nsamples::Integer; thin::Integer=1)
+    nsamples >= 0 || throw(ArgumentError("Sample count must be nonnegative"))
+    thin >= 1 || throw(ArgumentError("thin must be positive"))
+    nsamples <= typemax(Int) ÷ thin || throw(ArgumentError("Sweep count overflows"))
     state.valid || throw(ArgumentError("Cannot resume a state after a failed sweep"))
-    history = _allocate_history(state, nsweeps, state.batch_workspace)
-    for sweep in 1:nsweeps
-        step!(state)
-        _store_history!(history, state, sweep, state.batch_workspace)
+    history = _allocate_history(state, nsamples, state.batch_workspace)
+    for sample in 1:nsamples
+        step!(state, thin)
+        _store_history!(history, state, sample, state.batch_workspace)
     end
     return (; history..., walker_ids=copy(state.walker_ids))
 end
@@ -527,11 +654,13 @@ function _allocate_history(state, nsweeps, workspace)
         accepted=Matrix{Bool}(undef, n, nsweeps), move_indices=Vector{Int}(undef, nsweeps))
 end
 function _store_history!(history, state, sweep, workspace)
+    d, n = size(history.positions, 1), length(state.positions)
+    offset = (sweep - 1) * d * n
     for i in eachindex(state.positions)
-        history.positions[:, i, sweep] .= state.positions[i]
+        copyto!(history.positions, offset + (i - 1) * d + 1, state.positions[i], 1, d)
     end
-    history.logdensities[:, sweep] .= state.logdensities
-    history.accepted[:, sweep] .= state.accepted
+    copyto!(history.logdensities, (sweep - 1) * n + 1, state.logdensities, 1, n)
+    copyto!(history.accepted, (sweep - 1) * n + 1, state.accepted, 1, n)
     history.move_indices[sweep] = state.active_index
 end
 
@@ -539,7 +668,9 @@ end
     synchronize!(state, positions, logdensities)
 
 Copy externally owned positions and their matching cached log densities into a
-valid state. Inputs must not alias arrays borrowed from this state. Accept a
+valid state. Inputs may be arrays borrowed from this state in their original
+walker order; any other overlap with state storage, such as a reordered vector
+of borrowed walkers, gives undefined results. Accept a
 coordinate-by-walker matrix or a vector of coordinate vectors. Walker identities,
 RNG, sweep count, mixture phase, and cumulative counters stay unchanged.
 Clear the last-transition metadata. No target calls or affine-rank check run here.

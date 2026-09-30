@@ -19,5 +19,9 @@
         end
         step!(initialize(Threefry4x((42, 1, 2, 3)), logdensity, first(ensembles);
             move=DEMove()), 2)
+        mixture = MoveMixture((StretchMove(), DEMove()), [0.5, 0.5])
+        for initial in ensembles
+            sample!(initialize(rng, logdensity, initial; move=mixture, executor=ThreadedExecutor()), 2)
+        end
     end
 end
