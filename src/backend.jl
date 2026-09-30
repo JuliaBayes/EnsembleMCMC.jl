@@ -8,6 +8,7 @@ struct KernelWorkspace{T,P,L,V,I,C,F,A,S}
     controls::C
     factors::F
     valid::A
+    invalid::A
     status::S
     host_controls::Matrix{Int}
     host_factors::Matrix{T}
@@ -47,7 +48,8 @@ function _initialize_kernel(rng, target, initial; kwargs...)
         workspace = KernelWorkspace(positions, candidates, similar(positions),
             similar(logds), similar(initial, T, n), similar(initial, Int, n),
             similar(initial, Int, 4, n), similar(initial, T, 2, n),
-            similar(accepted), status, zeros(Int, 4, n), zeros(T, 2, n), zeros(Int, 3))
+            similar(accepted), copy(accepted), status, zeros(Int, 4, n), zeros(T, 2, n),
+            zeros(Int, 3))
         candidate_logds = copy(logds)
         KA.synchronize(KA.get_backend(positions))
         return EnsembleState(target, moves, host.weights, KernelExecutor(),
@@ -111,9 +113,7 @@ function _evaluate_group!(::KernelExecutor, state, move, part, move_index, propo
         _propose_snooker_kernel!(backend, 64)(w.candidates, w.positions, w.controls,
             w.logh, w.valid, state.accepted, state.candidate_logdensities,
             state.logdensities, state.acceptance_probabilities, move; ndrange=n)
-        _compact_kernel!(backend, 1)(w.indices, w.status, w.valid, n; ndrange=1)
-        copyto!(w.host_status, 1, w.status, 1, 1)
-        KA.synchronize(backend)
+        _compact!(w, n)
     else
         _propose_linear_kernel!(backend, (32, 4))(w.candidates, w.positions, w.controls,
             w.factors, w.logh, w.valid, w.indices, state.accepted, move; ndrange=(d, n))
@@ -129,28 +129,43 @@ function _evaluate_batch!(w::KernelWorkspace, state, group, acceptance_part)
     _gather_kernel!(backend, (32, 4))(w.batchpositions, w.candidates, w.controls,
         w.indices; ndrange=(size(w.positions, 1), n))
     values = view(w.values, 1:n)
-    fill!(values, NaN)
+    # An unwritten value stays +Inf and fails the sweep.
+    fill!(values, Inf)
     state.logdensity.batch!(values, view(w.batchpositions, :, 1:n))
-    _validate_kernel!(backend, 1)(w.status, w.values, n; ndrange=1)
+    return nothing
+end
+
+function _compact!(w::KernelWorkspace, n)
+    backend = KA.get_backend(w.positions)
+    # A fixed width compiles the kernel once for all ensemble sizes.
+    _compact_kernel!(backend, _SCAN_WIDTH)(w.indices, w.status, w.valid, n; ndrange=_SCAN_WIDTH)
+    copyto!(w.host_status, 1, w.status, 1, 1)
+    KA.synchronize(backend)
     return nothing
 end
 
 function _commit_group!(state, group, w::KernelWorkspace)
-    backend, n = KA.get_backend(w.positions), w.host_status[1]
-    if n > 0
-        _accept_commit_kernel!(backend, 64)(w.positions, w.candidates, state.logdensities,
-            state.candidate_logdensities, state.accepted, state.acceptance_probabilities,
-            w.controls, w.factors,
-            w.indices, w.logh, w.values, w.status; ndrange=n)
-    end
-    _count_accepted_kernel!(backend, 1)(w.status, state.accepted; ndrange=1)
-    copyto!(w.host_status, w.status)
-    KA.synchronize(backend)
-    k = w.host_status[2]
-    iszero(k) || throw(DomainError(only(Array(view(w.values, k:k))), "Invalid batched log density"))
+    n = w.host_status[1]
+    n > 0 && _accept_commit_kernel!(KA.get_backend(w.positions), 64)(w.positions, w.candidates,
+        state.logdensities, state.candidate_logdensities, state.accepted,
+        state.acceptance_probabilities, w.invalid, w.controls, w.factors, w.indices, w.logh,
+        w.values; ndrange=n)
     return nothing
 end
-_accepted_count(state, w::KernelWorkspace) = w.host_status[3]
+
+# Runs once per sweep. Linear moves need no other host wait in a sweep.
+function _accepted_count(state, w::KernelWorkspace)
+    backend = KA.get_backend(w.positions)
+    _sweep_status_kernel!(backend, _SCAN_WIDTH)(w.status, state.accepted, w.invalid;
+        ndrange=_SCAN_WIDTH)
+    copyto!(w.host_status, w.status)
+    KA.synchronize(backend)
+    i = w.host_status[2]
+    iszero(i) || throw(DomainError(Inf, "Invalid batched log density for walker $i " *
+        "(ID $(state.walker_ids[i])) in sweep $(state.step + 1): " *
+        "+Inf is not allowed and batch! must fill every value"))
+    return w.host_status[3]
+end
 
 function _snapshot(state, w::KernelWorkspace)
     current_state(state)
