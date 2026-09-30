@@ -18,17 +18,16 @@ jobs:
   test:
     name: Julia ${{ matrix.julia }} / ${{ matrix.os }} / ${{ matrix.threads }} threads
     runs-on: ${{ matrix.os }}
-    permissions:
-      contents: read
-      id-token: write
+    continue-on-error: ${{ matrix.allow_failure || false }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - {julia: '1.10', os: ubuntu-latest, threads: '1'}
-          - {julia: '1', os: ubuntu-latest, threads: '4'}
+          - {julia: '1.10', os: ubuntu-latest, threads: '4'}
           - {julia: '1', os: macos-latest, threads: '4'}
           - {julia: '1', os: windows-latest, threads: '4'}
+          - {julia: 'pre', os: ubuntu-latest, threads: '4', allow_failure: true}
     env:
       JULIA_NUM_THREADS: ${{ matrix.threads }}
     steps:
@@ -39,20 +38,36 @@ jobs:
       - uses: julia-actions/cache@v3.3.0
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
+
+  # Only this job gets id-token: write, for the Codecov OIDC upload.
+  # There is no GPU job because no GPU runners are available. See CONTRIBUTING.md for the CUDA tests.
+  coverage:
+    name: Coverage (Julia 1 / ubuntu-latest / 4 threads)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      JULIA_NUM_THREADS: '4'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
         with:
-          coverage: ${{ matrix.julia == '1' && matrix.os == 'ubuntu-latest' }}
+          version: '1'
+      - uses: julia-actions/cache@v3.3.0
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
+        with:
+          coverage: true
       - uses: julia-actions/julia-processcoverage@v1
-        if: matrix.julia == '1' && matrix.os == 'ubuntu-latest'
         with:
           directories: src
       - uses: actions/upload-artifact@v7
-        if: matrix.julia == '1' && matrix.os == 'ubuntu-latest'
         with:
           name: coverage
           path: lcov.info
           if-no-files-found: error
       - uses: codecov/codecov-action@v7
-        if: matrix.julia == '1' && matrix.os == 'ubuntu-latest'
         with:
           use_oidc: true
           files: lcov.info
@@ -87,7 +102,7 @@ jobs:
   deploy-docs:
     name: Deploy documentation
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: [test, docs]
+    needs: [test, coverage, docs]
     runs-on: ubuntu-latest
     permissions:
       pages: write

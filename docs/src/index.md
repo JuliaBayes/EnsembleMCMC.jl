@@ -1,16 +1,21 @@
 # EnsembleMCMC.jl
 
+```@meta
+CurrentModule = EnsembleMCMC
+```
+
 EnsembleMCMC samples a log density with coupled walkers. It provides Stretch,
 differential-evolution (DE), snooker, and Gaussian replacement moves, fixed mixtures, and threaded
 evaluation. Julia 1.10 or later is required.
 
 ## Installation
 
-Install the registered release:
+Install the registered release and Random123. `initialize` takes a Random123
+`Philox4x` or `Threefry4x` RNG, so `using Random123` must work in your environment:
 
 ```julia
 using Pkg
-Pkg.add("EnsembleMCMC")
+Pkg.add(["EnsembleMCMC", "Random123"])
 ```
 
 For features not yet in the registered release, install the development version:
@@ -20,6 +25,21 @@ using Pkg
 Pkg.add(url="https://github.com/JuliaBayes/EnsembleMCMC.jl")
 ```
 
+## Importing the verbs
+
+The generic verbs `initialize`, `step!`, `sample!`, `current_state`, `snapshot`,
+`synchronize!`, `validate_positions` and `acceptance_rate` are not exported. The
+package is mainly used through adapters such as BAT.jl, and these names clash with
+StatsBase and AbstractMCMC. Import them, or call them qualified:
+
+```julia
+using EnsembleMCMC: initialize, step!, sample!, current_state, snapshot
+EnsembleMCMC.acceptance_rate(state)
+```
+
+On Julia 1.11 and later they are declared `public`. The types and moves are
+exported.
+
 ## Sample a target
 
 Supply an unnormalized log density and either a coordinate-by-walker matrix or
@@ -28,6 +48,7 @@ and collects two consecutive sample blocks.
 
 ```jldoctest quickstart
 using EnsembleMCMC, Random, Random123
+using EnsembleMCMC: initialize, step!, sample!, current_state, snapshot
 
 rng = Philox4x((42, 1));
 
@@ -50,6 +71,12 @@ println((size(draws.positions), size(more.positions), current_state(state).sweep
 
 This checks usage, not convergence. Choose warmup and run length for your target.
 
+`sample!(state, n; thin=1)` runs `n * thin` sweeps and stores every `thin`-th one.
+`acceptance_rate(state)` returns the cumulative acceptance rate of each move.
+The history of `sample!` is allocated up front and returned only on success. If
+the target throws during a sweep, the state becomes invalid and the collected
+history is lost. For full control, call `step!` in a loop and keep `snapshot`s.
+
 `step!(state, n)` performs `n` complete sweeps without collecting history.
 `current_state(state)` returns `positions` as a vector of coordinate vectors,
 along with `logdensities`, `accepted`, `walker_ids`, `attempts`, `acceptances`,
@@ -61,6 +88,7 @@ stable, independent copy is needed:
 
 ```jldoctest state_views
 using EnsembleMCMC, Random, Random123
+using EnsembleMCMC: initialize, step!, sample!, current_state, snapshot
 
 rng = Philox4x((42, 3)); initial = [randn(rng, 2) for _ in 1:24];
 
@@ -81,7 +109,8 @@ println((saved.sweep_count, current_state(state).sweep_count, saved.positions ==
 (10, 11, true)
 ```
 
-Snapshots are owned observations, not restart checkpoints. They include
+Snapshots are owned observations, not restart checkpoints. Sampling is
+continuable in process, not resumable from disk. They include
 the same fields as `current_state`; `positions` is a vector of coordinate
 vectors, `acceptances` and `attempts` are counts per move, and `move_index` is
 `0` before the first sweep.
@@ -113,6 +142,7 @@ for an outer mixture. Ordinary `step!(state)` retains its standalone RNG law.
 
 ```jldoctest mixture
 using EnsembleMCMC, Random, Random123
+using EnsembleMCMC: initialize, step!, sample!, current_state, snapshot
 
 rng = Philox4x((42, 2)); initial = [randn(rng, 2) for _ in 1:24];
 
@@ -140,8 +170,23 @@ mutate its input. Groups update in order with frozen complements. Seeded results
 do not depend on thread scheduling.
 Each group uses balanced, contiguous chunks, with at most one task per default-pool
 thread and no more tasks than walkers in the group. There is no timing-based
-calibration or cost-based serial fallback. Use `SerialExecutor()` for cheap targets
-where task overhead can outweigh parallel work.
+calibration or cost-based serial fallback.
+
+`ThreadedExecutor` spawns tasks for every group, which costs a few microseconds per
+task. For cheap targets `SerialExecutor()` is faster. Example timings for d = 10
+and 100 walkers: with a very cheap target, a serial sweep takes 8 µs and a threaded
+sweep 29 µs. With a target of about 0.6 µs per evaluation, the threaded sweep is
+about twice as fast. `ThreadedExecutor(; min_chunk=k)` gives each task at least `k`
+walkers, which limits the task count for cheap targets. Results do not depend on
+`min_chunk`. An error in the target is rethrown as the original exception.
+
+### Executors and reproducibility
+
+`SerialExecutor`, `ThreadedExecutor` and `KernelExecutor` on the CPU give bitwise
+identical trajectories for `StretchMove` and `DEMove`. `DESnookerMove` and
+`GaussianReplacementMove` differ at rounding level, and a GPU can differ further
+from the CPU. Do not compare trajectories across executors for those moves. The
+samples are statistically equivalent.
 
 ### Gaussian replacement
 
@@ -155,16 +200,22 @@ move = MoveMixture((DEMove(), GaussianReplacementMove()), [1, 1])
 state = initialize(rng, logdensity, initial; move)
 ```
 
-The default `shrinkage=0.5` blends the complement's sample covariance with an
-isotropic covariance of the same trace. It needs at least `max(2d, 4)` walkers.
-Set `shrinkage=0` for the unregularized covariance, requiring at least `2(d + 1)`
-walkers. A failed covariance fit leaves that group unchanged without evaluating
-the target. Repeated failures can stall the move.
+The default `shrinkage=:auto` uses the proposal covariance `(1 + d/m) C`, where
+`C` is the sample covariance of the `m` complement walkers. This is affine
+invariant, so the acceptance rate does not depend on the conditioning of the
+target. If `m <= d` or the fit fails, the group falls back to shrinkage `1/2`.
+Use at least `4d` walkers. On near-isotropic targets with few walkers, an explicit
+`shrinkage` such as `0.5` can accept more. Explicit real values keep their meaning:
+a blend of the sample covariance with an isotropic covariance of the same trace.
+Shrinkage `0` needs at least `2(d + 1)` walkers. A failed covariance fit leaves
+that group unchanged without evaluating the target. Repeated failures can stall
+the move.
 
-Use Gaussian replacement for roughly elliptical targets. A poor Gaussian fit can
-miss tails or modes, especially in funnels. Check tail estimates and independent
-runs, not acceptance or ESS alone. Shrinkage breaks general affine equivariance.
-The default move remains `StretchMove`.
+Use Gaussian replacement for roughly elliptical targets. The independence proposal
+has lighter tails than heavy-tailed targets and can miss curved regions, such as
+a banana or a funnel. Mix it with `DEMove` or `StretchMove` for such targets. Check
+tail estimates and independent runs, not acceptance or ESS alone. The default move
+remains `StretchMove`.
 
 ## Batched log densities
 
@@ -172,6 +223,7 @@ Use [`BatchedLogDensity`](@ref) to evaluate candidates together, one per column:
 
 ```jldoctest batched
 using EnsembleMCMC, Random123
+using EnsembleMCMC: initialize, step!, sample!, current_state, snapshot
 
 scalar(x) = -sum(abs2, x) / 2
 batch!(values, positions) = (values .= scalar.(eachcol(positions)))
@@ -202,6 +254,7 @@ Use [`KernelExecutor`](@ref) with a CUDA matrix and a device batch callback:
 
 ```julia
 using CUDA, EnsembleMCMC, Random, Random123
+using EnsembleMCMC: initialize, step!, sample!, current_state, snapshot
 
 CUDA.allowscalar(false)
 rng = Philox4x((42, 5))
@@ -239,11 +292,17 @@ because kernel launches and group synchronization dominate.
 
 ## Inputs and outputs
 
-Initial coordinates must be finite and span their dimension. Initial log densities
-may be `-Inf`, allowing recovery from starts outside support. Stretch requires
-at least `2d` walkers. DE and snooker require at
-least `max(2d, 4)`. A target may return `-Inf` for proposals outside its support.
-NaN and `+Inf` are errors.
+Initial coordinates must be finite and span their dimension. `initialize` warns if
+the ensemble is nearly degenerate (smallest singular value ratio below `sqrt(eps)`).
+Initial log densities may be `-Inf`, but `initialize` warns about them. Stretch, DE
+and snooker move along lines through other walkers, so a start far outside the
+support may never recover. Start inside the support when possible. Non-finite
+initial values (NaN, `+Inf`) throw an error that names the walker.
+
+Stretch requires at least `2d` walkers. DE and snooker require at
+least `max(2d, 4)`. A target may return `-Inf` or `NaN` for proposals outside its
+support. Both are rejected, as in Stan. A `+Inf` candidate throws an error that
+names the walker and the sweep, and invalidates the state.
 
 | Field returned by `sample!` | Meaning |
 | --- | --- |
@@ -255,8 +314,11 @@ NaN and `+Inf` are errors.
 
 Rejections repeat the current state. Returned arrays own their storage. Repeated
 calls to [`sample!`](@ref) continue the same ensemble. Initialization copies the
-input coordinates and RNG. Reusing an unchanged RNG produces the same run. Use
-independent seeds or streams for independent ensembles.
+input coordinates and RNG. Reusing an unchanged RNG produces the same run.
+
+For independent chains, give each chain its own Random123 key, for example
+`Philox4x((seed, chain))` for `chain = 1:4`. Reusing one RNG object for several
+states gives identical chains.
 
 Random123 `Philox4x{UInt64}` and `Threefry4x{UInt64}` are supported. Do not mutate
 state fields. If a target throws during a sweep, that state cannot resume. Correct
