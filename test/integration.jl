@@ -33,7 +33,8 @@ end
         @test_throws DomainError initialize(test_rng(), target, positions; logdensities=fill(invalid, length(positions)))
     end
     @test_throws ArgumentError initialize(test_rng(), target, positions; logdensities=fill(1im, length(positions)))
-    negative_infinity = initialize(test_rng(), target, positions; logdensities=fill(-Inf, length(positions)))
+    negative_infinity = @test_logs (:warn, r"All 24 initial log densities are -Inf") initialize(
+        test_rng(), target, positions; logdensities=fill(-Inf, length(positions)))
     @test all(==(-Inf), current_state(negative_infinity).logdensities)
 end
 
@@ -97,7 +98,8 @@ end
 
 @testset "Nonfinite starts and degenerate transitions" begin
     target(x) = x[1] > 0 ? -x[1]^2 / 2 : -Inf
-    state = initialize(test_rng(), target, [[-1.0], [1.0], [2.0], [3.0]]; move=DEMove())
+    state = @test_logs (:warn, r"1 of 4 initial log densities are -Inf") initialize(
+        test_rng(), target, [[-1.0], [1.0], [2.0], [3.0]]; move=DEMove())
     step!(state, 16)
     @test all(isfinite, current_state(state).logdensities)
     coincident = [[0.0], [0.0], [0.0], [1.0]]

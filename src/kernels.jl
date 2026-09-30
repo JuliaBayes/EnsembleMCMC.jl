@@ -1,3 +1,5 @@
+using KernelAbstractions: @groupsize, @localmem, @synchronize
+
 KA.@kernel function _propose_linear_kernel!(
     candidates,
     positions,
@@ -129,17 +131,40 @@ KA.@kernel function _propose_snooker_kernel!(
     end
 end
 
+# Upper bound for the workgroup size of the single-group scan and reduction kernels.
+const _SCAN_WIDTH = 256
+
+# One workgroup: each item scans a contiguous chunk, so the indices stay ascending.
 KA.@kernel function _compact_kernel!(indices, status, valid, n)
-    index = @index(Global, Linear)
-    count = zero(eltype(status))
-    for j in 1:n
+    counts = @localmem Int (_SCAN_WIDTH,)
+    t = @index(Local, Linear)
+    chunk = cld(n, @groupsize()[1])
+    count = 0
+    for j in ((t - 1) * chunk + 1):min(t * chunk, n)
+        count += @inbounds valid[j]
+    end
+    @inbounds counts[t] = count
+    @synchronize
+    t = @index(Local, Linear)
+    if isone(t)
+        total = 0
+        for s in 1:@groupsize()[1]
+            count = @inbounds counts[s]
+            @inbounds counts[s] = total
+            total += count
+        end
+        @inbounds status[1] = total
+    end
+    @synchronize
+    t = @index(Local, Linear)
+    chunk = cld(n, @groupsize()[1])
+    offset = @inbounds counts[t]
+    for j in ((t - 1) * chunk + 1):min(t * chunk, n)
         if @inbounds valid[j]
-            count += one(count)
-            @inbounds indices[count] = j
+            offset += 1
+            @inbounds indices[offset] = j
         end
     end
-    @inbounds status[1] = count
-    @inbounds status[2] = zero(eltype(status))
 end
 
 KA.@kernel function _gather_kernel!(batchpositions, candidates, controls, indices)
@@ -149,18 +174,6 @@ KA.@kernel function _gather_kernel!(batchpositions, candidates, controls, indice
     @inbounds batchpositions[coordinate, k] = candidates[coordinate, walker]
 end
 
-KA.@kernel function _validate_kernel!(status, values, count)
-    index = @index(Global, Linear)
-    @inbounds status[2] = 0
-    for k in 1:count
-        value = @inbounds values[k]
-        if isnan(value) || isinf(value) && value > zero(value)
-            @inbounds status[2] = k
-            break
-        end
-    end
-end
-
 KA.@kernel function _accept_commit_kernel!(
     positions,
     candidates,
@@ -168,42 +181,60 @@ KA.@kernel function _accept_commit_kernel!(
     candidate_logdensities,
     accepted,
     acceptance_probabilities,
+    invalid,
     controls,
     factors,
     indices,
     logh,
     values,
-    status,
 )
     k = @index(Global, Linear)
-    if iszero(@inbounds(status[2]))
-        j = @inbounds indices[k]
-        walker = @inbounds controls[1, j]
-        candidate_logdensity = @inbounds values[k]
-        @inbounds candidate_logdensities[walker] = candidate_logdensity
-        T = eltype(positions)
-        logratio = convert(
-            T,
-            @inbounds(logh[j]) + candidate_logdensity - @inbounds(logdensities[walker]),
-        )
-        probability = isnan(logratio) ? zero(T) : clamp(exp(logratio), zero(T), one(T))
-        acceptance_probabilities[walker] = probability
-        accept = @inbounds factors[2, j] < probability
-        @inbounds accepted[walker] = accept
-        if accept
-            for coordinate in 1:size(positions, 1)
-                @inbounds positions[coordinate, walker] = candidates[coordinate, walker]
-            end
-            @inbounds logdensities[walker] = candidate_logdensity
+    j = @inbounds indices[k]
+    walker = @inbounds controls[1, j]
+    candidate_logdensity = @inbounds values[k]
+    # A NaN candidate is a rejection. +Inf fails the sweep in `_accepted_count`.
+    isnan(candidate_logdensity) && (candidate_logdensity = oftype(candidate_logdensity, -Inf))
+    bad = candidate_logdensity == Inf
+    @inbounds invalid[walker] = bad
+    @inbounds candidate_logdensities[walker] = candidate_logdensity
+    T = eltype(positions)
+    logratio = convert(
+        T,
+        @inbounds(logh[j]) + candidate_logdensity - @inbounds(logdensities[walker]),
+    )
+    probability = isnan(logratio) ? zero(T) : clamp(exp(logratio), zero(T), one(T))
+    acceptance_probabilities[walker] = probability
+    accept = !bad && @inbounds(factors[2, j]) < probability
+    @inbounds accepted[walker] = accept
+    if accept
+        for coordinate in 1:size(positions, 1)
+            @inbounds positions[coordinate, walker] = candidates[coordinate, walker]
         end
+        @inbounds logdensities[walker] = candidate_logdensity
     end
 end
 
-KA.@kernel function _count_accepted_kernel!(status, accepted)
-    index = @index(Global, Linear)
-    count = zero(eltype(status))
-    for walker in eachindex(accepted)
+# One workgroup: status[2] gets the first invalid walker (0 if none), status[3] the accept count.
+KA.@kernel function _sweep_status_kernel!(status, accepted, invalid)
+    counts = @localmem Int (_SCAN_WIDTH,)
+    firsts = @localmem Int (_SCAN_WIDTH,)
+    t = @index(Local, Linear)
+    count, first = 0, typemax(Int)
+    for walker in t:@groupsize()[1]:length(accepted)
         count += @inbounds accepted[walker]
+        @inbounds(invalid[walker]) && (first = min(first, walker))
     end
-    @inbounds status[3] = count
+    @inbounds counts[t] = count
+    @inbounds firsts[t] = first
+    @synchronize
+    t = @index(Local, Linear)
+    if isone(t)
+        count, first = 0, typemax(Int)
+        for s in 1:@groupsize()[1]
+            count += @inbounds counts[s]
+            first = min(first, @inbounds firsts[s])
+        end
+        @inbounds status[2] = first == typemax(Int) ? 0 : first
+        @inbounds status[3] = count
+    end
 end

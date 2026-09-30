@@ -37,7 +37,7 @@ function set_rng!(rng::R, rngpart::RNGPartition{R}, i::Integer) where R <: Abstr
     mod_partcounters = _rngpart_inc_partctrs(rngpart.partctrsbase, rngpart.depth, j)
     mod_depth = rngpart.depth + 1
 
-    Random.seed!(rng, rngpart.seed)
+    _rngpart_setkey!(rng, rngpart.seed)
     rngpart_setpartctrs!(rng, mod_partcounters, mod_depth)
 
     rng
@@ -46,9 +46,39 @@ end
 Random.AbstractRNG(rngpart::RNGPartition{R}, i::Integer) where R =
     set_rng!(rngpart_createrng(R), rngpart, i)
 
+# Equals `RNGPartition(AbstractRNG(rngpart, i), partidxs)` without creating an RNG.
+function rngpart_subpartition(rngpart::RNGPartition{R,S,C}, i::Integer,
+    partidxs::AbstractUnitRange{<:Integer}) where {R,S,C}
+    idxs = eachindex(rngpart)
+    Base.checkindex(Bool, idxs, i) || throw(ArgumentError("Index $i not in partition indices $idxs of $rngpart"))
+    partctrs = _rngpart_inc_partctrs(rngpart.partctrsbase, rngpart.depth, i - minimum(idxs))
+    depth = rngpart.depth + 1
+    1 <= depth <= length(partctrs) || throw(ArgumentError("Partition depth out of allowed range"))
+    any(_rngpart_haspartctrtag, partctrs) && throw(ArgumentError("Partition counter(s) out of allowed range"))
+    base = _rngpart_inc_partctrs(partctrs, depth, 1)
+    return RNGPartition{R,S,C,typeof(partidxs)}(rngpart.seed, base, depth, partidxs)
+end
+
+rngpart_depth(rng::Union{Philox4x,Threefry4x}) = rngpart_getpartctrs(rng).depth
+
 rngpart_createrng(::Type{T}) where {T <: Philox4x} = T(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
 rngpart_getseed(rng::Philox4x) = (rng.key1, rng.key2)
+
+# Match `seed!` without its output block, which `rngpart_setpartctrs!` recomputes.
+# Reset the buffer position for both types, so a draw depends only on the stream address.
+# Random123 `seed!` keeps the Threefry4x position.
+function _rngpart_setkey!(rng::Philox4x{T}, seed) where {T}
+    rng.key1, rng.key2 = seed[1] % T, seed[2] % T
+    rng.p = 0
+    return rng
+end
+
+function _rngpart_setkey!(rng::Threefry4x{T}, seed) where {T}
+    rng.key1, rng.key2, rng.key3, rng.key4 = seed[1] % T, seed[2] % T, seed[3] % T, seed[4] % T
+    rng.p = 0
+    return rng
+end
 
 rngpart_createrng(::Type{T}) where {T <: Threefry4x} = T(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
@@ -91,7 +121,7 @@ _rngpart_haspartctrtag(x::T) where {T<:Unsigned} = (x & _rngpart_topbit_mask(T))
 
 _rngpart_getpartctr(x::T) where {T<:Unsigned} = (x & _rngpart_lowbits_mask(T))
 
-function _rngpart_getdepth(partctrinfo::NTuple{N,T}) where {N,T<:Unsigned}
+function _rngpart_getdepth(partctrinfo::Tuple{T,Vararg{T}}) where {T<:Unsigned}
     cycle::Int = 1
     for i in eachindex(partctrinfo)
         x = partctrinfo[i]
@@ -104,13 +134,13 @@ function _rngpart_getdepth(partctrinfo::NTuple{N,T}) where {N,T<:Unsigned}
     return cycle
 end
 
-function _rngpart_inc_partctrs(partctrs::NTuple{N,T}, depth::Integer, x::Integer) where {N,T<:Unsigned}
+function _rngpart_inc_partctrs(partctrs::Tuple{T,Vararg{T}}, depth::Integer, x::Integer) where {T<:Unsigned}
     1 <= depth <= length(partctrs) || throw(ArgumentError("Partition depth out of allowed range"))
     m = ntuple(i -> i == depth ? T(x) : zero(T), Val(length(partctrs)))
     partctrs .+ m
 end
 
-function _rngpart_settopbit(partctrs::NTuple{N,T}, depth::Integer) where {N,T<:Unsigned}
+function _rngpart_settopbit(partctrs::Tuple{T,Vararg{T}}, depth::Integer) where {T<:Unsigned}
     1 <= depth <= length(partctrs) || throw(ArgumentError("Partition depth out of allowed range"))
     any(_rngpart_haspartctrtag, partctrs) && throw(ArgumentError("Partition counter(s) out of allowed range"))
     m = ntuple(i -> i <= depth ? _rngpart_topbit_mask(T) : zero(T), Val(length(partctrs)))

@@ -8,7 +8,7 @@ makedocs(
     sitename = "EnsembleMCMC.jl",
     repo = Documenter.Remotes.GitHub("JuliaBayes", "EnsembleMCMC.jl"),
     modules = [EnsembleMCMC],
-    checkdocs = :exports,
+    checkdocs = :public,
     doctest = true,
     warnonly = false,
     format = Documenter.HTML(
