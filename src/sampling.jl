@@ -545,7 +545,7 @@ for purposes and walkers, so its partition depth must be 4 or less.
 Inner mixtures use purpose 2 for selection, leaving purpose 1 for an outer mixture.
 The supplied address replaces the standalone cycle/step address for this sweep only.
 The sweep still counts: `sweep_count` advances, so a later standalone
-[`step!(state)`](@ref) uses the next step address, and a cyclic mixture moves to its
+`step!(state)` uses the next step address, and a cyclic mixture moves to its
 next phase.
 """
 function step!(state::EnsembleState, rng::AbstractRNG; proposal_index::Integer=1)
