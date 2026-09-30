@@ -153,7 +153,7 @@ function test_kernel_executor(device=copy)
         failed = initialize(test_rng(), BatchedLogDensity(scalar, incomplete!),
             device(initial); executor=KernelExecutor())
         @test_throws DomainError step!(failed)
-        @test calls[] == 1
+        @test calls[] == 2 # The kernel path checks values once per sweep.
         @test_throws ArgumentError current_state(failed)
         throws!(values, positions) = (fill!(values, 0); error("callback failed"))
         failed = initialize(test_rng(), BatchedLogDensity(scalar, throws!),
@@ -162,10 +162,45 @@ function test_kernel_executor(device=copy)
         @test_throws ArgumentError snapshot(failed)
         invalid = BatchedLogDensity(scalar, (v, x) -> fill!(v, Inf))
         failed = initialize(test_rng(), invalid, device(initial); executor=KernelExecutor())
-        @test_throws DomainError step!(failed)
+        err = try step!(failed); nothing catch e; e end
+        @test err isa DomainError && occursin("walker 1 (ID 1) in sweep 1", err.msg)
         outside = BatchedLogDensity(scalar, (v, x) -> fill!(v, -Inf))
         state = initialize(test_rng(), outside, device(initial); executor=KernelExecutor())
         @test !any(Array(sample!(state, 1).accepted))
+
+        # NaN candidates are rejections, so they must match a -Inf reference exactly.
+        region!(v, x) = (v .= ifelse.(view(x, 1, :) .> 1, NaN, vec(-sum(abs2, x; dims=1)) ./ 2))
+        nan_target = BatchedLogDensity(scalar, region!)
+        reference_target(x) = x[1] > 1 ? -Inf : scalar(x)
+        inside = clamp.(initial, -1, 0.9)
+        for move in (StretchMove(), DEMove())
+            expected = sample!(initialize(test_rng(), reference_target, inside; move), 50)
+            draws = sample!(initialize(test_rng(), nan_target, device(inside);
+                move, executor=KernelExecutor()), 50)
+            @test Array(draws.accepted) == expected.accepted
+            @test Array(draws.positions) ≈ expected.positions
+            @test all(<=(1), Array(draws.positions)[1, :, :])
+        end
+
+        # More walkers than the scan width exercise the chunked compaction and reduction.
+        wide = randn(MersenneTwister(5), 2, 601)
+        for move in (StretchMove(), DEMove())
+            reference = initialize(test_rng(), scalar, wide; move)
+            state = initialize(test_rng(), target, device(wide); move, executor=KernelExecutor())
+            expected, draws = sample!(reference, 5), sample!(state, 5)
+            @test Array(draws.accepted) == expected.accepted
+            @test Array(draws.positions) ≈ expected.positions
+            @test current_state(state).acceptances == current_state(reference).acceptances
+        end
+        backend = EnsembleMCMC.KA.get_backend(device(wide))
+        @test all(Iterators.product((1, 7, 256, 257, 1000, 4099), (1, 64, 256))) do (n, width)
+            valid = rand(MersenneTwister(n), Bool, n)
+            indices, status = device(zeros(Int, n)), device(zeros(Int, 3))
+            EnsembleMCMC._compact_kernel!(backend, width)(indices, status, device(valid), n;
+                ndrange=width)
+            count = Array(status)[1]
+            count == sum(valid) && Array(indices)[1:count] == findall(valid)
+        end
     end
 end
 
