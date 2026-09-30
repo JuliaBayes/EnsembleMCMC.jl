@@ -45,10 +45,21 @@
         @test_throws ErrorException step!(state)
         @test_throws ArgumentError current_state(state)
 
-        invalid_batch!(values, positions) = fill!(values, NaN)
-        invalid = initialize(test_rng(),
-            BatchedLogDensity(gaussian_logdensity, invalid_batch!), initial)
-        @test_throws DomainError step!(invalid)
-        @test_throws ArgumentError current_state(invalid)
+        nan_batch!(values, positions) = fill!(values, NaN)
+        rejected = initialize(test_rng(),
+            BatchedLogDensity(gaussian_logdensity, nan_batch!), initial)
+        before = snapshot(rejected)
+        step!(rejected)
+        @test !any(current_state(rejected).accepted)
+        @test all(==(-Inf), current_state(rejected).candidate_logdensities)
+        @test current_state(rejected).positions == before.positions
+
+        for invalid_batch! in ((values, positions) -> fill!(values, Inf), (values, positions) -> nothing)
+            invalid = initialize(test_rng(),
+                BatchedLogDensity(gaussian_logdensity, invalid_batch!), initial)
+            err = try step!(invalid); nothing; catch e; e; end
+            @test err isa DomainError && occursin("sweep 1", err.msg) && occursin("walker", err.msg)
+            @test_throws ArgumentError current_state(invalid)
+        end
     end
 end
