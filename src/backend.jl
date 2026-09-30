@@ -24,11 +24,13 @@ function _check_kernel_array(initial)
         throw(ArgumentError("KernelExecutor supports CPU and CUDA arrays"))
 end
 
-function _initialize_kernel(rng, target, initial; kwargs...)
+function _initialize_kernel(rng, target, initial; logdensities=nothing, kwargs...)
     target isa BatchedLogDensity || throw(ArgumentError("KernelExecutor requires BatchedLogDensity"))
     _check_kernel_array(initial)
     return _with_kernel_device(initial) do
-        host = initialize(rng, target.scalar, Array(initial); kwargs...)
+        # The host state checks each cached value, which needs host storage.
+        cached = isnothing(logdensities) ? nothing : Array(logdensities)
+        host = initialize(rng, target.scalar, Array(initial); logdensities=cached, kwargs...)
         moves = map(m -> _kernel_move(m, initial), host.moves)
         all(_kernel_move_supported, moves) ||
             throw(ArgumentError("KernelExecutor supports only the built-in moves"))
