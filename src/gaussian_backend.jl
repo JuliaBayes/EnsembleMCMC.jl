@@ -1,7 +1,7 @@
 function _kernel_move(move::_AllocatedGaussianMove, initial)
     T = eltype(move.mean)
     d, n = size(initial)
-    return _AllocatedGaussianMove(move.shrinkage, similar(initial, T, d),
+    return _AllocatedGaussianMove(move.shrinkage, similar(initial, T, d), similar(initial, T, d),
         similar(initial, T, d, d), similar(initial, T, d, n), Matrix{T}(undef, d, n))
 end
 
@@ -16,7 +16,8 @@ function _prepare_gaussian_group!(w::KernelWorkspace, move, state, indices)
     backend = KA.get_backend(w.positions)
     _gather_gaussian_complement_kernel!(backend, (32, 4))(
         move.scratch, w.positions, w.controls; ndrange=(size(w.positions, 1), n))
-    scale, valid = _fit_gaussian!(move.mean, move.factor, move.scratch, n, move.shrinkage)
+    scale, valid = _fit_gaussian!(move.anchor, move.mean, move.factor, move.scratch, n,
+        move.shrinkage)
     return _FittedGaussianMove(move, scale, valid)
 end
 
@@ -50,8 +51,8 @@ function _evaluate_group!(::KernelExecutor, state, fitted::_FittedGaussianMove,
     copyto!(w.factors, 1, w.host_factors, 1, 2n)
     _propose_gaussian_kernel!(backend, 64)(w.candidates, w.positions, w.controls,
         w.logh, w.valid, state.accepted, state.candidate_logdensities,
-        state.logdensities, state.acceptance_probabilities, move.mean, move.factor, move.scratch,
-        fitted.scale; ndrange=n)
+        state.logdensities, state.acceptance_probabilities, move.anchor, move.mean, move.factor,
+        move.scratch, fitted.scale; ndrange=n)
     _compact_kernel!(backend, 1)(w.indices, w.status, w.valid, n; ndrange=1)
     copyto!(w.host_status, 1, w.status, 1, 1)
     KA.synchronize(backend)
@@ -93,6 +94,7 @@ KA.@kernel function _propose_gaussian_kernel!(
     candidate_logdensities,
     logdensities,
     acceptance_probabilities,
+    anchor,
     mean,
     factor,
     scratch,
@@ -107,7 +109,7 @@ KA.@kernel function _propose_gaussian_kernel!(
         for column in 1:row
             offset += @inbounds factor[row, column] * scratch[column, j]
         end
-        candidate = scale * (@inbounds(mean[row]) + offset)
+        candidate = @inbounds(anchor[row]) + scale * (@inbounds(mean[row]) + offset)
         @inbounds candidates[row, walker] = candidate
         proposal_valid &= isfinite(candidate)
     end
@@ -116,7 +118,7 @@ KA.@kernel function _propose_gaussian_kernel!(
     candidate_distance = zero(eltype(positions))
     if proposal_valid
         for row in 1:dimension
-            residual = @inbounds positions[row, walker] / scale - mean[row]
+            residual = @inbounds (positions[row, walker] - anchor[row]) / scale - mean[row]
             for column in 1:(row - 1)
                 residual -= @inbounds factor[row, column] * scratch[column, j]
             end
@@ -125,7 +127,7 @@ KA.@kernel function _propose_gaussian_kernel!(
             current_distance += abs2(residual)
         end
         for row in 1:dimension
-            residual = @inbounds candidates[row, walker] / scale - mean[row]
+            residual = @inbounds (candidates[row, walker] - anchor[row]) / scale - mean[row]
             for column in 1:(row - 1)
                 residual -= @inbounds factor[row, column] * scratch[column, j]
             end

@@ -86,6 +86,94 @@
         @test calls[] == original_calls
     end
 
+    @testset "Shrinkage options" begin
+        @test GaussianReplacementMove().shrinkage === :auto
+        @test GaussianReplacementMove(shrinkage=0.25).shrinkage == 0.25
+        @test_throws ArgumentError GaussianReplacementMove(shrinkage=:none)
+        @test_throws ArgumentError GaussianReplacementMove(shrinkage=1.5)
+        @test EnsembleMCMC.minimum_walkers(GaussianReplacementMove(), 3) == 6
+        @test EnsembleMCMC.minimum_walkers(GaussianReplacementMove(shrinkage=0), 3) == 8
+        @test EnsembleMCMC.minimum_walkers(GaussianReplacementMove(shrinkage=0.5), 1) == 4
+    end
+
+    @testset "Small solve against LinearAlgebra, $T, d=$d" for T in (Float32, Float64),
+        d in (1, 5, 128, 129)
+        rng = Philox4x((11, d))
+        A = randn(rng, T, d, d)
+        factor = Matrix(cholesky(Symmetric(A * A' + d * I)).L)
+        v = randn(rng, T, d)
+        @test EnsembleMCMC._gaussian_ldiv!(factor, copy(v)) ≈ LowerTriangular(factor) \ v rtol=1000eps(T)
+    end
+
+    @testset "Fit against LinearAlgebra, $T, d=$d, shrinkage=$s" for T in (Float32, Float64),
+        d in (1, 3, 10), s in (0, 0.3, :auto)
+        rng = Philox4x((13, d))
+        n = 2d + 3
+        X = randn(rng, T, d, d) * randn(rng, T, d, n) .+ 10randn(rng, T, d)
+        anchor, μ, factor = zeros(T, d), zeros(T, d), zeros(T, d, d)
+        shrinkage = s isa Symbol ? s : T(s)
+        scale, valid = EnsembleMCMC._fit_gaussian!(anchor, μ, factor, copy(X), n, shrinkage)
+        @test valid
+        Y = Float64.(X)
+        C = cov(Y; dims=2)
+        expected = s === :auto ? (1 + d / n) * C : (1 - s) * C + s * tr(C) / d * I
+        L = LowerTriangular(Float64.(factor))
+        @test anchor .+ scale .* μ ≈ vec(mean(Y; dims=2)) rtol=sqrt(eps(T))
+        @test Float64(scale)^2 * L * L' ≈ expected rtol=sqrt(eps(T))
+    end
+
+    @testset "Auto shrinkage falls back when the complement is too small" begin
+        X = randn(Philox4x((17, 1)), 4, 4)
+        fit(s) = begin
+            anchor, μ, factor = zeros(4), zeros(4), zeros(4, 4)
+            scale, valid = EnsembleMCMC._fit_gaussian!(anchor, μ, factor, copy(X), 4, s)
+            (; anchor, μ, factor, scale, valid)
+        end
+        @test fit(:auto) == fit(0.5)
+        @test fit(:auto).valid
+    end
+
+    @testset "Float32 fit far from the origin" begin
+        X = randn(Philox4x((19, 1)), Float32, 2, 40) .+ 1f6
+        anchor, μ, factor = zeros(Float32, 2), zeros(Float32, 2), zeros(Float32, 2, 2)
+        scale, valid = EnsembleMCMC._fit_gaussian!(anchor, μ, factor, copy(X), 40, 0f0)
+        @test valid
+        L = LowerTriangular(Float64.(factor))
+        # Scaling before the anchor subtraction gave a relative error near 5e-3.
+        @test Float64(scale)^2 * L * L' ≈ cov(Float64.(X); dims=2) rtol=1e-5
+    end
+
+    @testset "Auto shrinkage has an affine-invariant Hastings ratio" begin
+        # The Cholesky factor is not equivariant, so compare densities, not draws.
+        matrix = [1e3 2.0 0; -0.5 1e-2 0; 0 1 1]
+        shift = [1e4, -3.0, 0.5]
+        X = randn(Philox4x((29, 1)), 3, 12)
+        points = randn(Philox4x((29, 2)), 3, 5)
+        distances(X, points) = begin
+            fit = (anchor=zeros(3), mean=zeros(3), factor=zeros(3, 3))
+            scale, valid = EnsembleMCMC._fit_gaussian!(fit.anchor, fit.mean, fit.factor,
+                copy(X), size(X, 2), :auto)
+            @test valid
+            [EnsembleMCMC._gaussian_squared_distance!(zeros(3), p, fit, scale) for p in eachcol(points)]
+        end
+        @test distances(matrix * X .+ shift, matrix * points .+ shift) ≈ distances(X, points) rtol=1e-8
+    end
+
+    @testset "Ill-conditioned rotated target keeps acceptance" begin
+        # Shrinkage 0.5 toward tr(C)/d * I gives acceptance near 0.003 here.
+        d = 10
+        Q = Matrix(qr(randn(Philox4x((23, 1)), d, d)).Q)
+        variances = exp.(range(0, log(1e3), length=d))
+        precision = Symmetric(Q * Diagonal(inv.(variances)) * Q')
+        L = cholesky(Symmetric(Q * Diagonal(variances) * Q')).L
+        initial = [L * randn(Philox4x((23, i + 1)), d) for i in 1:100]
+        state = initialize(test_rng(), x -> -dot(x, precision * x) / 2, initial;
+            move=GaussianReplacementMove())
+        step!(state, 300)
+        current = current_state(state)
+        @test sum(current.acceptances) / sum(current.attempts) > 0.3
+    end
+
     @testset "Extreme coordinate rescaling" begin
         initial = Float32[-1 0 1 0 -1 -1 1 1; 0 -1 0 1 -1 1 -1 1]
         reference = sample!(initialize(test_rng(), _ -> 0f0, initial;
