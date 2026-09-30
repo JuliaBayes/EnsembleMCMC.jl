@@ -11,15 +11,47 @@ gaussian_logdensity(x) = -sum(abs2, x) / 2
 initial_walkers() = [randn(Philox4x((731, i)), 2) for i in 1:24]
 test_rng() = Philox4x((573, 19))
 
+# Integrated autocorrelation time with Sokal's adaptive window (c = 5).
+function autocorrelation_time(x::AbstractVector)
+    n = length(x)
+    centered = x .- mean(x)
+    variance = sum(abs2, centered) / n
+    iszero(variance) && return 1.0
+    tau = 1.0
+    for lag in 1:(n - 1)
+        tau += 2 * dot(view(centered, 1:(n - lag)), view(centered, (1 + lag):n)) / (n * variance)
+        lag >= 5tau && break
+    end
+    return max(tau, 1.0)
+end
+
+# Deviation of the ensemble average of `values` (walker × sweep) from `truth` in units
+# of its Monte Carlo standard error, estimated from the per-sweep ensemble means.
+function mcse_z(values::AbstractMatrix, truth)
+    series = vec(mean(values; dims=1))
+    mcse = sqrt(var(series) * autocorrelation_time(series) / length(series))
+    return (mean(series) - truth) / mcse
+end
+
+# Check moments up to second order of `(coordinate, walker, sweep)` draws.
+function test_moments(draws, expected_mean, expected_cov; z=4.5)
+    d = size(draws, 1)
+    for i in 1:d
+        @test abs(mcse_z(draws[i, :, :], expected_mean[i])) < z
+        for j in i:d
+            second = expected_cov[i, j] + expected_mean[i] * expected_mean[j]
+            @test abs(mcse_z(draws[i, :, :] .* draws[j, :, :], second)) < z
+        end
+    end
+end
+
 @testset "EnsembleMCMC" begin
     @testset "Gaussian target: $(typeof(move))" for move in
         (StretchMove(), DEMove(), DESnookerMove())
         state = initialize(test_rng(), gaussian_logdensity, initial_walkers(); move)
         step!(state, 500)
-        draws = sample!(state, 2_000)
-        coordinates = reshape(draws.positions, 2, :)
-        @test maximum(abs, vec(mean(coordinates; dims=2))) < 0.12
-        @test cov(coordinates; dims=2) ≈ Matrix{Float64}(I, 2, 2) atol=0.15 rtol=0
+        draws = sample!(state, 4_000)
+        test_moments(draws.positions, zeros(2), Matrix{Float64}(I, 2, 2))
     end
 
     @testset "Affine trajectory: $(typeof(move))" for move in
@@ -223,4 +255,6 @@ include("batched.jl")
 include("kernel.jl")
 
 include("integration.jl")
+include("api.jl")
+include("validation.jl")
 include("aqua.jl")
