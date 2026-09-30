@@ -1,4 +1,6 @@
 using EnsembleMCMC
+using EnsembleMCMC: initialize, step!, sample!, current_state, snapshot, synchronize!,
+    validate_positions, acceptance_rate
 using LinearAlgebra
 using Random
 using Random123
@@ -221,3 +223,4 @@ include("batched.jl")
 include("kernel.jl")
 
 include("integration.jl")
+include("aqua.jl")

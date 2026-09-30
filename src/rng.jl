@@ -91,7 +91,7 @@ _rngpart_haspartctrtag(x::T) where {T<:Unsigned} = (x & _rngpart_topbit_mask(T))
 
 _rngpart_getpartctr(x::T) where {T<:Unsigned} = (x & _rngpart_lowbits_mask(T))
 
-function _rngpart_getdepth(partctrinfo::NTuple{N,T}) where {N,T<:Unsigned}
+function _rngpart_getdepth(partctrinfo::Tuple{T,Vararg{T}}) where {T<:Unsigned}
     cycle::Int = 1
     for i in eachindex(partctrinfo)
         x = partctrinfo[i]
@@ -104,13 +104,13 @@ function _rngpart_getdepth(partctrinfo::NTuple{N,T}) where {N,T<:Unsigned}
     return cycle
 end
 
-function _rngpart_inc_partctrs(partctrs::NTuple{N,T}, depth::Integer, x::Integer) where {N,T<:Unsigned}
+function _rngpart_inc_partctrs(partctrs::Tuple{T,Vararg{T}}, depth::Integer, x::Integer) where {T<:Unsigned}
     1 <= depth <= length(partctrs) || throw(ArgumentError("Partition depth out of allowed range"))
     m = ntuple(i -> i == depth ? T(x) : zero(T), Val(length(partctrs)))
     partctrs .+ m
 end
 
-function _rngpart_settopbit(partctrs::NTuple{N,T}, depth::Integer) where {N,T<:Unsigned}
+function _rngpart_settopbit(partctrs::Tuple{T,Vararg{T}}, depth::Integer) where {T<:Unsigned}
     1 <= depth <= length(partctrs) || throw(ArgumentError("Partition depth out of allowed range"))
     any(_rngpart_haspartctrtag, partctrs) && throw(ArgumentError("Partition counter(s) out of allowed range"))
     m = ntuple(i -> i <= depth ? _rngpart_topbit_mask(T) : zero(T), Val(length(partctrs)))

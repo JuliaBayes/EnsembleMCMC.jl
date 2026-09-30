@@ -9,10 +9,14 @@ using KernelAbstractions: @index
 
 export StretchMove, DEMove, DESnookerMove, MoveMixture
 export GaussianReplacementMove
-export SerialExecutor, ThreadedExecutor, initialize, step!, sample!, current_state, snapshot, synchronize!
+export SerialExecutor, ThreadedExecutor, KernelExecutor
 export BatchedLogDensity
-export KernelExecutor
-export validate_positions
+
+# The generic verbs stay unexported so they do not clash with adapter packages.
+@static if VERSION >= v"1.11.0-DEV.469"
+    eval(Expr(:public, :initialize, :step!, :sample!, :current_state, :snapshot,
+        :synchronize!, :validate_positions, :acceptance_rate))
+end
 
 include("rng.jl")
 include("moves.jl")

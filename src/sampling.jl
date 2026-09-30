@@ -126,6 +126,18 @@ function current_state(state::EnsembleState)
 end
 
 """
+    acceptance_rate(state)
+
+Return the cumulative acceptance rate of each move as a `Vector{Float64}`, in
+mixture component order. A move with no attempts yet has rate `NaN`.
+[`synchronize!`](@ref) does not reset the counts.
+"""
+function acceptance_rate(state::EnsembleState)
+    current = current_state(state)
+    return [a / n for (a, n) in zip(current.acceptances, current.attempts)]
+end
+
+"""
     snapshot(state)
 
 Copy the fields returned by [`current_state`](@ref), including every nested
