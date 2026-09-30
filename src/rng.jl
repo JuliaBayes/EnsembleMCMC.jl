@@ -46,6 +46,28 @@ end
 Random.AbstractRNG(rngpart::RNGPartition{R}, i::Integer) where R =
     set_rng!(rngpart_createrng(R), rngpart, i)
 
+# Equals `RNGPartition(AbstractRNG(rngpart, i), partidxs)` without creating an RNG.
+function rngpart_subpartition(rngpart::RNGPartition{R,S,C}, i::Integer,
+    partidxs::AbstractUnitRange{<:Integer}) where {R,S,C}
+    idxs = eachindex(rngpart)
+    Base.checkindex(Bool, idxs, i) || throw(ArgumentError("Index $i not in partition indices $idxs of $rngpart"))
+    partctrs = _rngpart_inc_partctrs(rngpart.partctrsbase, rngpart.depth, i - minimum(idxs))
+    depth = rngpart.depth + 1
+    1 <= depth <= length(partctrs) || throw(ArgumentError("Partition depth out of allowed range"))
+    any(_rngpart_haspartctrtag, partctrs) && throw(ArgumentError("Partition counter(s) out of allowed range"))
+    base = _rngpart_inc_partctrs(partctrs, depth, 1)
+    return RNGPartition{R,S,C,typeof(partidxs)}(rngpart.seed, base, depth, partidxs)
+end
+
+rngpart_depth(rng::Union{Philox4x,Threefry4x}) = rngpart_getpartctrs(rng).depth
+
+# `seed!` keeps the Threefry4x buffer position, so reset it to act like a new RNG.
+function rngpart_setfresh!(rng::R, rngpart::RNGPartition{R}, i::Integer) where {R<:Union{Philox4x,Threefry4x}}
+    set_rng!(rng, rngpart, i)
+    rng.p = 0
+    return rng
+end
+
 rngpart_createrng(::Type{T}) where {T <: Philox4x} = T(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
 rngpart_getseed(rng::Philox4x) = (rng.key1, rng.key2)

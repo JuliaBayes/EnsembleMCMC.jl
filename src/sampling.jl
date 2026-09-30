@@ -68,8 +68,8 @@ const _COMPANION_PURPOSE = 5
 const _SCALE_PURPOSE = 6
 
 _stream_index(purpose, proposal) = (purpose - 1) * _PROPOSALS_PER_PURPOSE + proposal
-_walker_rngpart(part, purpose, proposal) = RNGPartition(
-    AbstractRNG(part, _stream_index(purpose, proposal)), Base.OneTo(typemax(Int32) - 2),
+_walker_rngpart(part, purpose, proposal) = rngpart_subpartition(
+    part, _stream_index(purpose, proposal), Base.OneTo(typemax(Int32) - 2),
 )
 
 mutable struct EnsembleState{F,M,W,E,R,P,V,L,B,A,Q}
@@ -318,8 +318,8 @@ function _select_move(weights::AbstractVector{T}, rng, step) where {T<:AbstractF
     return something(findlast(>(0), weights))
 end
 
-function _groups(move, part, proposal_idx, order)
-    rng = AbstractRNG(part, _stream_index(4, proposal_idx))
+function _groups(rng, move, part, proposal_idx, order)
+    rngpart_setfresh!(rng, part, _stream_index(4, proposal_idx))
     permutation = randperm(rng, length(order))
     ngroups = group_count(move)
     if ngroups == 2
@@ -465,13 +465,14 @@ function _sweep!(state, part, proposal_index)
     state.valid || throw(ArgumentError("Cannot resume a state after a failed sweep"))
     state.step < typemax(Int32) - 2 || throw(ArgumentError("RNG step range exhausted"))
     state.valid = false
-    selection_rng = isnothing(proposal_index) ?
-        AbstractRNG(part, _stream_index(1, 1)) :
-        AbstractRNG(part, _stream_index(2, proposal_index))
-    idx = _select_move(state.weights, selection_rng, state.step + 1)
+    # The owned RNG is re-keyed at the start of each standalone sweep, so it can serve as scratch.
+    scratch = state.rng
+    rngpart_setfresh!(scratch, part, isnothing(proposal_index) ?
+        _stream_index(1, 1) : _stream_index(2, proposal_index))
+    idx = _select_move(state.weights, scratch, state.step + 1)
     stream_index = isnothing(proposal_index) ? idx : proposal_index
     move = state.moves[idx]
-    groups = _groups(move, part, stream_index, state.walker_order)
+    groups = _groups(scratch, move, part, stream_index, state.walker_order)
     acceptance_part = _walker_rngpart(part, 3, stream_index)
 
     for active in eachindex(groups)
@@ -539,11 +540,13 @@ function _allocate_history(state, nsweeps, workspace)
         accepted=Matrix{Bool}(undef, n, nsweeps), move_indices=Vector{Int}(undef, nsweeps))
 end
 function _store_history!(history, state, sweep, workspace)
+    d, n = size(history.positions, 1), length(state.positions)
+    offset = (sweep - 1) * d * n
     for i in eachindex(state.positions)
-        history.positions[:, i, sweep] .= state.positions[i]
+        copyto!(history.positions, offset + (i - 1) * d + 1, state.positions[i], 1, d)
     end
-    history.logdensities[:, sweep] .= state.logdensities
-    history.accepted[:, sweep] .= state.accepted
+    copyto!(history.logdensities, (sweep - 1) * n + 1, state.logdensities, 1, n)
+    copyto!(history.accepted, (sweep - 1) * n + 1, state.accepted, 1, n)
     history.move_indices[sweep] = state.active_index
 end
 
