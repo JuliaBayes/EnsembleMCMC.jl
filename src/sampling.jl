@@ -197,8 +197,9 @@ Check that a vector of coordinate vectors or a coordinate-by-walker matrix has
 positive, matching dimensions, finite real coordinates, and full affine rank.
 Return `nothing` without changing the input. Rank validation uses an owned host
 matrix of the positions relative to the first walker, in the floating-point
-coordinate type `T`. Singular values at or below `max(d, n) * eps(T)` times the
-largest one count as zero, as in `LinearAlgebra.rank`. A full-rank ensemble whose
+coordinate type `T`, after uniform power-of-two rescaling. Singular values at or
+below `max(d, n) * eps(T)` times the largest one count as zero, as in
+`LinearAlgebra.rank`. A full-rank ensemble whose
 smallest-to-largest singular value ratio is below `sqrt(eps(T))` gives a warning,
 because linear moves then stay close to a lower-dimensional subspace.
 Types without an SVD, such as `BigFloat`, use the diagonal of a pivoted QR
@@ -216,6 +217,9 @@ function validate_positions(positions::AbstractVector)
     T <: AbstractFloat || throw(ArgumentError("Coordinates must be real floating-point values"))
     centered = Matrix{T}(reduce(hcat, positions))
     all(isfinite, centered) || throw(ArgumentError("Coordinates must be finite"))
+    # Bound centering and factorization without rounding normal significands.
+    _, exponent = frexp(maximum(abs, centered))
+    centered .= ldexp.(centered, -exponent)
     centered .-= centered[:, 1]
     values = _singular_values(centered)
     tolerance = max(size(centered)...) * eps(T) * first(values)
@@ -356,7 +360,7 @@ Base.@inline function _accept_candidate!(state, i, log_hastings, logd, acceptanc
     end
     state.candidate_logdensities[i] = stored_logd
     T = eltype(state.positions[i])
-    logratio = convert(T, log_hastings + stored_logd - state.logdensities[i])
+    logratio = convert(T, (stored_logd - state.logdensities[i]) + log_hastings)
     probability = isnan(logratio) ? zero(T) : clamp(exp(logratio), zero(T), one(T))
     rng = state.walker_rngs[i]
     set_rng!(rng, acceptance_part, state.walker_ids[i])

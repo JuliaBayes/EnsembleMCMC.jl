@@ -12,6 +12,34 @@
     @test_throws ArgumentError validate_positions(nonfinite)
 end
 
+@testset "Position validation across numeric scales" begin
+    for positions in (
+        reshape([-1e308, 1e308], 1, :),
+        reshape(repeat(Float32[0, 1f38], 16), 1, :),
+        Float32[-1 0 1 0; 0 1 0 -1] .* nextfloat(0f0),
+    )
+        state = initialize(test_rng(), _ -> 0.0, positions)
+        @test reduce(hcat, current_state(state).positions) == positions
+    end
+end
+
+@testset "Log-density offsets preserve acceptance" begin
+    initial = Float32[-1 0 1 0 -1 -1 1 1; 0 -1 0 1 -1 1 -1 1]
+    for batched in (false, true)
+        states = map((0f0, -1f10)) do offset
+            scalar(x) = maximum(abs, x) < 100 ? offset : -Inf32
+            batch!(v, x) = map!(scalar, v, eachcol(x))
+            target = batched ? BatchedLogDensity(scalar, batch!) : scalar
+            initialize(test_rng(), target, initial)
+        end
+        draws = map(state -> sample!(state, 10), states)
+        @test first(draws).positions == last(draws).positions
+        @test first(draws).accepted == last(draws).accepted
+        @test current_state(first(states)).acceptance_probabilities ==
+            current_state(last(states)).acceptance_probabilities
+    end
+end
+
 @testset "Cached initial log densities" begin
     positions = [Float32.(x) for x in initial_walkers()]
     calls = Ref(0)
