@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.4 — 2026-10-02
+
+### Fixed
+
+- Preserve Hastings corrections under constant log-density offsets in scalar, batched, and kernel execution.
+- Keep finite snooker projections under large coordinate translations and overflowing companion differences.
+- Prevent overflow during affine-rank validation by rescaling its owned workspace before centering.
+
 ## 0.0.3 — 2026-09-30
 
 ### Breaking
