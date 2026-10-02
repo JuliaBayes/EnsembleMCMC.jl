@@ -88,16 +88,17 @@ KA.@kernel function _propose_snooker_kernel!(
         end
         old_norm = old_scale * sqrt(old_sum)
         if !iszero(old_norm) && isfinite(old_norm)
-            dot_a = zero(T)
-            dot_b = zero(T)
+            projection = zero(T)
             for coordinate in 1:dimension
                 direction = @inbounds(
                     positions[coordinate, walker] - positions[coordinate, reference]
                 ) / old_norm
-                dot_a += direction * @inbounds(positions[coordinate, companion_a])
-                dot_b += direction * @inbounds(positions[coordinate, companion_b])
+                projection += _projected_difference(direction,
+                    @inbounds(positions[coordinate, companion_a]),
+                    @inbounds(positions[coordinate, companion_b]),
+                )
             end
-            displacement = move.scale * (dot_a - dot_b)
+            displacement = move.scale * projection
             new_scale = zero(T)
             for coordinate in 1:dimension
                 direction = @inbounds(
@@ -200,7 +201,7 @@ KA.@kernel function _accept_commit_kernel!(
     T = eltype(positions)
     logratio = convert(
         T,
-        @inbounds(logh[j]) + candidate_logdensity - @inbounds(logdensities[walker]),
+        (candidate_logdensity - @inbounds(logdensities[walker])) + @inbounds(logh[j]),
     )
     probability = isnan(logratio) ? zero(T) : clamp(exp(logratio), zero(T), one(T))
     acceptance_probabilities[walker] = probability

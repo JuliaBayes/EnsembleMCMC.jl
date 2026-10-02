@@ -3,6 +3,46 @@ function test_kernel_executor(device=copy)
         scalar(x::Vector) = -sum(abs2, x) / 2
         batch!(values, positions) = (values .= vec(-sum(abs2, positions; dims=1) / 2))
         target = BatchedLogDensity(scalar, batch!)
+        @testset "Log-density offsets preserve acceptance" begin
+            points = Float32[-1 0 1 0 -1 -1 1 1; 0 -1 0 1 -1 1 -1 1]
+            states = map((0f0, -1f10)) do offset
+                offset_density(x) = maximum(abs, x) < 100 ? offset : -Inf32
+                offset_batch!(v, x) = (v .= ifelse.(vec(maximum(abs, x; dims=1)) .< 100, offset, -Inf32))
+                initialize(test_rng(), BatchedLogDensity(offset_density, offset_batch!), device(points);
+                    executor=KernelExecutor())
+            end
+            draws = map(state -> sample!(state, 10), states)
+            @test Array(first(draws).positions) == Array(last(draws).positions)
+            @test Array(first(draws).accepted) == Array(last(draws).accepted)
+            @test Array(current_state(first(states)).acceptance_probabilities) ==
+                Array(current_state(last(states)).acceptance_probabilities)
+        end
+        @testset "Snooker geometry far from the origin" begin
+            points = 1.4e308 .+ 1e294 .* [-1.0 0 1 0 -1 -1 1 1; 0 -1 0 1 -1 1 -1 1]
+            calls = Ref(0)
+            density(x) = (calls[] += 1; -sum(abs2, (x .- 1.4e308) ./ 1e294) / 2)
+            function density!(v, x)
+                calls[] += length(v)
+                v .= vec(-sum(abs2, (x .- 1.4e308) ./ 1e294; dims=1) ./ 2)
+            end
+            state = initialize(test_rng(), BatchedLogDensity(density, density!), device(points);
+                move=DESnookerMove(), executor=KernelExecutor())
+            step!(state)
+            @test calls[] == 2size(points, 2)
+        end
+        @testset "Snooker projections beyond the coordinate range" begin
+            points = floatmax(Float64) .* [0 .1 .6 -.6; 0 .6 0 0]
+            calls = Ref(0)
+            density(x) = (calls[] += 1; -sum(abs2, x ./ floatmax(Float64)) / 2)
+            function density!(v, x)
+                calls[] += length(v)
+                v .= vec(-sum(abs2, x ./ floatmax(Float64); dims=1) ./ 2)
+            end
+            state = initialize(Philox4x((1, 19)), BatchedLogDensity(density, density!), device(points);
+                move=DESnookerMove(), executor=KernelExecutor())
+            step!(state)
+            @test calls[] > size(points, 2)
+        end
         initial = randn(MersenneTwister(18), 3, 12)
         coordinates = Float32.(initial)
         values = Float64.(scalar.(Vector.(eachcol(coordinates))))

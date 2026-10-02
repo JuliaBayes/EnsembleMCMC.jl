@@ -207,6 +207,12 @@ function _de_snooker_direction_norm(a, b)
     return norm((a[i] - b[i] for i in eachindex(a, b)))
 end
 
+@inline function _projected_difference(direction, a, b)
+    difference = a - b
+    # A finite projection can survive an overflowing companion difference.
+    return ifelse(isfinite(difference), direction * difference, direction * a - direction * b)
+end
+
 function propose!(
     candidate,
     move::DESnookerMove,
@@ -234,10 +240,9 @@ function propose!(
     end
 
     @. candidate = (current_walker - reference) / direction_norm
-    displacement = move.scale * (
-        dot(candidate, current[companion_a_idx]) -
-        dot(candidate, current[companion_b_idx])
-    )
+    displacement = move.scale * sum(eachindex(candidate)) do i
+        _projected_difference(candidate[i], current[companion_a_idx][i], current[companion_b_idx][i])
+    end
     @. candidate = current_walker + candidate * displacement
     proposed_direction_norm = _de_snooker_direction_norm(candidate, reference)
     if iszero(proposed_direction_norm) || !isfinite(proposed_direction_norm)
