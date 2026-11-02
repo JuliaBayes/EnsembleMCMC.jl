@@ -1,5 +1,6 @@
 function test_kernel_executor(device=copy)
     @testset "Kernel executor" begin
+        test_proposal_overflow(device; executor=KernelExecutor())
         scalar(x::Vector) = -sum(abs2, x) / 2
         batch!(values, positions) = (values .= vec(-sum(abs2, positions; dims=1) / 2))
         target = BatchedLogDensity(scalar, batch!)

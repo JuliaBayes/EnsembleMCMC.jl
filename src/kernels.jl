@@ -15,8 +15,8 @@ KA.@kernel function _propose_linear_kernel!(
     walker = @inbounds controls[1, j]
     companion = @inbounds controls[2, j]
     stretch = @inbounds factors[1, j]
-    @inbounds candidates[coordinate, walker] = positions[coordinate, companion] +
-        stretch * (positions[coordinate, walker] - positions[coordinate, companion])
+    @inbounds candidates[coordinate, walker] = _linear_candidate(positions[coordinate, companion],
+        stretch, positions[coordinate, walker], positions[coordinate, companion])
     if isone(coordinate)
         @inbounds logh[j] = (size(positions, 1) - 1) * log(stretch)
         @inbounds valid[j] = true
@@ -41,8 +41,8 @@ KA.@kernel function _propose_linear_kernel!(
     companion_a = @inbounds controls[2, j]
     companion_b = @inbounds controls[3, j]
     gamma = @inbounds factors[1, j]
-    @inbounds candidates[coordinate, walker] = positions[coordinate, walker] +
-        gamma * (positions[coordinate, companion_a] - positions[coordinate, companion_b])
+    @inbounds candidates[coordinate, walker] = _linear_candidate(positions[coordinate, walker],
+        gamma, positions[coordinate, companion_a], positions[coordinate, companion_b])
     if isone(coordinate)
         @inbounds logh[j] = zero(gamma)
         @inbounds valid[j] = true
