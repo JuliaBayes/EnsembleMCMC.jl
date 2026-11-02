@@ -6,6 +6,7 @@
 - Avoid overflowing full squared residuals in Gaussian replacement when the required half-quadratic remains finite.
 - Clarify Gaussian fallback invariance, synchronization borrowing, and kernel callback failure timing.
 - Strengthen numerical-scale, curved-target, and threaded failure tests. Require recorded hardware CUDA validation before backend-changing releases.
+- Require Random123 1.5 or later for ARM builds and usable precompile caches, and PrecompileTools 1.0.1 or later for selective macro imports.
 
 These numerical fixes can change trajectories at extreme scales and Gaussian rounding. The public API is unchanged.
 
