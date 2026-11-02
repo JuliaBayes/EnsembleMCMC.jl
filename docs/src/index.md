@@ -127,8 +127,9 @@ the same borrowing rules as positions.
 
 [`synchronize!`](@ref) copies external positions and matching cached densities
 into a valid state. It preserves walker IDs, RNG state, mixture phase, and counts.
-The caller owns density consistency and affine rank. Inputs must not alias the
-state's borrowed arrays. This operation clears the last-transition metadata.
+The caller owns density consistency and affine rank. Inputs may be arrays borrowed
+from this state in their original walker order. Other overlap, including reordered
+borrowed walkers, is unsupported. This operation clears the last-transition metadata.
 Use [`validate_positions`](@ref) to check finite coordinates and affine rank after
 retry initialization. Initialization uses the same validation. Ordinary
 synchronization does not repeat the rank check.
@@ -201,9 +202,9 @@ state = initialize(rng, logdensity, initial; move)
 ```
 
 The default `shrinkage=:auto` uses the proposal covariance `(1 + d/m) C`, where
-`C` is the sample covariance of the `m` complement walkers. This is affine
-invariant, so the acceptance rate does not depend on the conditioning of the
-target. If `m <= d` or the fit fails, the group falls back to shrinkage `1/2`.
+`C` is the sample covariance of the `m` complement walkers. This branch is affine
+invariant. If `m <= d` or the fit fails, the group falls back to shrinkage `1/2`.
+The isotropic fallback is not affine invariant.
 Use at least `4d` walkers. On near-isotropic targets with few walkers, an explicit
 `shrinkage` such as `0.5` can accept more. Explicit real values keep their meaning:
 a blend of the sample covariance with an isotropic covariance of the same trace.
@@ -282,6 +283,9 @@ sweeps transfer no coordinates or log densities to the host. Transfers such as
 The callback must use the current task's CUDA stream, or synchronize its own work
 before returning. It must fill every output and leave input positions unchanged.
 Sampler operations run on the input device and complete before returning.
+Invalid batch outputs (`+Inf` or unwritten entries) fail at sweep completion, so
+later group callbacks may run before the error is reported. A thrown callback
+stops the sweep immediately. Either failure leaves the state unusable.
 CPU and GPU floating-point arithmetic may differ, so trajectories need not match
 bit for bit. `KernelExecutor` also accepts CPU matrices for testing and supports
 all built-in moves and their mixtures. Gaussian replacement also keeps its

@@ -155,7 +155,7 @@ function _commit_group!(state, group, w::KernelWorkspace)
     return nothing
 end
 
-# Runs once per sweep. Linear moves need no other host wait in a sweep.
+# Linear moves use one explicit status synchronization per sweep.
 function _accepted_count(state, w::KernelWorkspace)
     backend = KA.get_backend(w.positions)
     _sweep_status_kernel!(backend, _SCAN_WIDTH)(w.status, state.accepted, w.invalid;

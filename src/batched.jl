@@ -9,6 +9,10 @@ proposals. The callback must treat `positions` as read-only, fill every entry of
 `values` with the same result as `scalar`, and must not retain either array. It
 is called once per nonempty frozen proposal group and controls any parallelism
 used to evaluate that group.
+
+With [`KernelExecutor`](@ref), invalid outputs (`+Inf` or unwritten entries) are
+reported at sweep completion, so later group callbacks may run. A thrown callback
+stops the sweep immediately. Either failure invalidates the state.
 """
 struct BatchedLogDensity{F,B}
     scalar::F

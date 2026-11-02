@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.0.5 — 2026-11-02
+
+- Preserve finite Stretch and DE proposals when intermediate subtraction or multiplication overflows.
+- Avoid overflowing full squared residuals in Gaussian replacement when the required half-quadratic remains finite.
+- Clarify Gaussian fallback invariance, synchronization borrowing, and kernel callback failure timing.
+- Strengthen numerical-scale, curved-target, and threaded failure tests. Require recorded hardware CUDA validation before backend-changing releases.
+
+These numerical fixes can change trajectories at extreme scales and Gaussian rounding. The public API is unchanged.
+
 ## 0.0.4 — 2026-10-02
 
 ### Fixed
@@ -13,8 +22,8 @@
 ### Breaking
 
 - Stop exporting the generic verbs `initialize`, `step!`, `sample!`, `current_state`, `snapshot`, `synchronize!` and `validate_positions`. Use `using EnsembleMCMC: ...` or qualified calls. They are `public` on Julia 1.11 and later. The types stay exported.
-- A NaN candidate log density is now a rejection, as in Stan. A `+Inf` candidate and a non-finite initial value still throw.
-- `GaussianReplacementMove` defaults to `shrinkage=:auto`, which changes its results. The proposal covariance is `(1 + d/m) C` from the `m` complement walkers. It is affine invariant. It falls back to shrinkage `1/2` when `m <= d` or the fit fails.
+- A NaN candidate log density is now a rejection, as in Stan. A `+Inf` candidate log density, NaN or `+Inf` initial log density, and non-finite initial coordinate still throw. Initial `-Inf` log densities are allowed with a warning.
+- `GaussianReplacementMove` defaults to `shrinkage=:auto`, which changes its results. The proposal covariance is `(1 + d/m) C` from the `m` complement walkers. That branch is affine invariant. It falls back to shrinkage `1/2` when `m <= d` or the fit fails; this isotropic fallback is not affine invariant.
 - Threefry4x streams changed: `set_rng!` now resets the buffer position, so every Threefry4x trajectory differs from 0.0.2. Philox4x trajectories are unchanged, except for `GaussianReplacementMove` (new default).
 - `ThreadedExecutor` no longer calibrates or falls back to serial execution (8eca227).
 
