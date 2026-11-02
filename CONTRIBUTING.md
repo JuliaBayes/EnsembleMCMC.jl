@@ -45,9 +45,9 @@ is skipped with an `@info` if no second device can open a context.
 
 ## Before a release
 
-- Confirm every CI job passes on the exact release commit.
+- Confirm all required CI jobs pass on the exact release commit. Review allowed-failure prerelease jobs separately.
 - For backend changes, run the CUDA suite on a functional GPU at that commit. Record the device, Julia/CUDA versions, pass count, and any second-device skip. A skip-only run is not validation.
-- Review the exported interface and document breaking changes in the experimental 0.0.x series.
+- Review all documented public constructors, methods, keywords, defaults, and result fields, including qualified methods. Document API breaks and trajectory changes.
 - Update the changelog from unreleased to the chosen version and date.
 - Confirm `Project.toml` matches that version.
 - Confirm repository visibility and documentation hosting before registration.

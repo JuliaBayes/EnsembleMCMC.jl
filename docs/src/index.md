@@ -183,6 +183,12 @@ walkers, which limits the task count for cheap targets. Results do not depend on
 
 ### Executors and reproducibility
 
+Seeded runs with a deterministic target are reproducible with the same inputs,
+RNG address, executor, and software and hardware environment. Thread scheduling
+and `min_chunk` do not affect the logical walker streams. Bitwise replay across
+package, Julia, dependency, backend, or hardware versions is not guaranteed.
+Numerical fixes can change trajectories; release notes record known changes.
+
 `SerialExecutor`, `ThreadedExecutor` and `KernelExecutor` on the CPU give bitwise
 identical trajectories for `StretchMove` and `DEMove`. `DESnookerMove` and
 `GaussianReplacementMove` differ at rounding level, and a GPU can differ further
@@ -339,8 +345,19 @@ Affine equivariance does not solve multimodality.
 
 Coordinate transforms, automatic initialization, and diagnostic integration
 remain outside this package.
-AbstractMCMC and LogDensityProblems adapters are not included. The interface is
-experimental during the initial 0.0 series.
+AbstractMCMC and LogDensityProblems adapters are not included.
+
+## Compatibility
+
+The interface is experimental during the initial 0.0 series. The planned 0.1
+series will preserve the documented move, target and executor constructors,
+sampling methods, keywords, defaults, and result fields within patch releases.
+This includes the qualified methods documented in the [API](@ref), even though
+they are not exported.
+
+Concrete sampler state fields and constructors, scratch storage, RNG partition
+helpers, and undocumented extension hooks are internal. Use the documented
+inspection and sampling methods instead of accessing state fields.
 
 ## License
 
