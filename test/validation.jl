@@ -44,4 +44,6 @@ end
     initial = [randn(Philox4x((41, i)), 2) for i in 1:32]
     _, draws = run_chain(Philox4x((43, 5)), banana, initial; move, nsamples=16_000)
     test_moments(draws.positions, zeros(2), [1.0 0.0; 0.0 1 + 2b^2])
+    dependence = (draws.positions[1, :, :].^2 .- 1) .* draws.positions[2, :, :]
+    @test abs(mcse_z(dependence, 2b)) < 4.5
 end

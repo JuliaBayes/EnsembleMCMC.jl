@@ -126,6 +126,22 @@ function _de_companion_indices(
     return companion_indices[first_position], companion_indices[second_position]
 end
 
+@inline function _linear_candidate(origin, scale, a, b)
+    difference = a - b
+    candidate = origin + scale * difference
+    if isfinite(candidate) || !isfinite(scale)
+        return candidate
+    elseif isfinite(difference)
+        return fma(scale, difference, origin)
+    elseif iszero(scale)
+        return origin
+    else
+        # Finite coordinates with an overflowing difference have opposite signs.
+        # Halving bounds the difference; fma preserves cancellation with the origin.
+        return 2 * fma(scale, a / 2 - b / 2, origin / 2)
+    end
+end
+
 function propose!(
     candidate,
     move::StretchMove,
@@ -153,6 +169,10 @@ function propose!(
     stretch = b * (b / move.scale)
     @. candidate = current[companion_idx] +
         stretch * (current[walker_idx] - current[companion_idx])
+    if !all(isfinite, candidate)
+        @. candidate = _linear_candidate(current[companion_idx], stretch,
+            current[walker_idx], current[companion_idx])
+    end
     return (length(candidate) - 1) * log(stretch)
 end
 
@@ -181,6 +201,10 @@ function propose!(
     gamma = move.gamma0 * (one(T) + move.sigma * randn(rng, T))
     @. candidate = current[walker_idx] +
         gamma * (current[companion_a] - current[companion_b])
+    if !all(isfinite, candidate)
+        @. candidate = _linear_candidate(current[walker_idx], gamma,
+            current[companion_a], current[companion_b])
+    end
     return zero(move.gamma0)
 end
 

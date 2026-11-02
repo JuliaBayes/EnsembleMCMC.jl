@@ -1,6 +1,6 @@
 name = "EnsembleMCMC"
 uuid = "ee15a35a-54c9-4a12-9721-3f3d8c2797c8"
-version = "0.0.4"
+version = "0.0.5"
 license = "Apache-2.0"
 
 [deps]
@@ -16,9 +16,9 @@ CUDA = "6"
 KernelAbstractions = "0.9.42"
 julia = "1.10"
 LinearAlgebra = "1"
-PrecompileTools = "1"
+PrecompileTools = "1.0.1"
 Random = "1"
-Random123 = "1.2"
+Random123 = "1.5"
 Statistics = "1"
 Test = "1"
 

@@ -134,6 +134,54 @@ end
     end
 end
 
+@testset "Threaded failures wait for sibling callbacks" begin
+    if Threads.nthreads(:default) > 1
+        initial = initial_walkers()[1:4]
+        values = gaussian_logdensity.(initial)
+        proposals = Vector{Float64}[]
+        recorded(x) = (push!(proposals, copy(x)); gaussian_logdensity(x))
+        step!(initialize(test_rng(), recorded, initial; logdensities=values))
+
+        first_worker = Channel{Task}(1)
+        throw_now = Channel{Nothing}(1)
+        sibling_started = Channel{Nothing}(1)
+        release_sibling = Channel{Nothing}(1)
+        observer_ready = Channel{Nothing}(1)
+        failure = TargetFailure(copy(proposals[1]))
+        function target(x)
+            if x == proposals[1]
+                put!(first_worker, current_task())
+                take!(throw_now)
+                throw(failure)
+            elseif x == proposals[2]
+                put!(sibling_started, nothing)
+                take!(release_sibling)
+            end
+            gaussian_logdensity(x)
+        end
+        state = initialize(test_rng(), target, initial;
+            logdensities=values, executor=ThreadedExecutor())
+        stepping = @async error_of(() -> step!(state))
+        worker = take!(first_worker)
+        take!(sibling_started)
+        # Sticky tasks on this thread resume in waiter order. The observer runs
+        # after stepping processes the failed worker, avoiding a scheduling race.
+        observer = @async begin
+            put!(observer_ready, nothing)
+            error_of(() -> wait(worker))
+        end
+        take!(observer_ready)
+        try
+            put!(throw_now, nothing)
+            wait(observer)
+            @test !istaskdone(stepping)
+        finally
+            put!(release_sibling, nothing)
+        end
+        @test fetch(stepping) === failure
+    end
+end
+
 @testset "NaN candidate densities reject" begin
     nan_calls = Threads.Atomic{Int}(0)
     target(x) = x[1] > 1 ? (Threads.atomic_add!(nan_calls, 1); NaN) : gaussian_logdensity(x)

@@ -6,10 +6,10 @@ complement, with the independence-proposal Hastings correction.
 
 With the default `shrinkage=:auto`, the proposal covariance is `(1 + d/m) * C`,
 where `C` is the unbiased sample covariance of the `m` complement walkers. This
-is affine invariant, so acceptance does not depend on the scales or the
-correlations of the target. The factor `1 + d/m` widens the directions that a
-small complement underestimates. If `m <= d` or `C` is not positive definite,
-the move uses `shrinkage=1/2` for that group.
+is affine invariant when the fit succeeds. The factor `1 + d/m` widens the
+directions that a small complement underestimates. If `m <= d` or `C` is not
+positive definite, the move uses `shrinkage=1/2` for that group. This isotropic
+fallback is not affine invariant.
 
 A finite `shrinkage` in `[0, 1]` shrinks `C` toward `tr(C)/d * I` instead. This
 is not scale invariant: on targets with very different scales or strong
@@ -134,6 +134,7 @@ _gaussian_ldiv!(factor, scratch) = ldiv!(LowerTriangular(factor), scratch)
 function _gaussian_ldiv!(factor::StridedMatrix{T}, scratch::StridedVector{T}) where {T<:Union{Float32,Float64}}
     length(scratch) > 128 && return ldiv!(LowerTriangular(factor), scratch)
     # Small forward solves avoid BLAS call overhead and visit contiguous columns.
+    # Each walker owns a d-element scratch column and the factor is d-by-d.
     @inbounds for j in eachindex(scratch)
         x = scratch[j] / factor[j, j]
         scratch[j] = x
@@ -144,10 +145,11 @@ function _gaussian_ldiv!(factor::StridedMatrix{T}, scratch::StridedVector{T}) wh
     return scratch
 end
 
-function _gaussian_squared_distance!(scratch, position, move, scale)
+function _gaussian_half_squared_distance!(scratch, position, move, scale)
     @. scratch = (position - move.anchor) / scale - move.mean
     _gaussian_ldiv!(move.factor, scratch)
-    return sum(abs2, scratch)
+    # The half-square can fit even when the full squared residual overflows.
+    return sum(x -> (x / 2) * x, scratch)
 end
 
 function propose!(candidate, fitted::_FittedGaussianMove, current,
@@ -162,8 +164,8 @@ function propose!(candidate, fitted::_FittedGaussianMove, current,
     mul!(candidate, LowerTriangular(move.factor), scratch)
     @. candidate = move.anchor + scale * (move.mean + candidate)
     all(isfinite, candidate) || return nothing
-    current_distance = _gaussian_squared_distance!(scratch, current[walker_idx], move, scale)
+    current_distance = _gaussian_half_squared_distance!(scratch, current[walker_idx], move, scale)
     # Use the rounded candidate, not the normal draw used to generate it.
-    candidate_distance = _gaussian_squared_distance!(scratch, candidate, move, scale)
-    return (candidate_distance - current_distance) / 2
+    candidate_distance = _gaussian_half_squared_distance!(scratch, candidate, move, scale)
+    return candidate_distance - current_distance
 end

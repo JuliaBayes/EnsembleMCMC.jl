@@ -4,6 +4,7 @@
 using CUDA, EnsembleMCMC, Random, Random123, Test
 using EnsembleMCMC: initialize, step!, sample!, current_state, snapshot, synchronize!
 test_rng() = Philox4x((573, 19))
+include("overflow.jl")
 include("kernel.jl")
 
 # A device with no room for a context (for example one full from another job) cannot host the test.

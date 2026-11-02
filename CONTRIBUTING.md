@@ -46,6 +46,7 @@ is skipped with an `@info` if no second device can open a context.
 ## Before a release
 
 - Confirm every CI job passes on the exact release commit.
+- For backend changes, run the CUDA suite on a functional GPU at that commit. Record the device, Julia/CUDA versions, pass count, and any second-device skip. A skip-only run is not validation.
 - Review the exported interface and document breaking changes in the experimental 0.0.x series.
 - Update the changelog from unreleased to the chosen version and date.
 - Confirm `Project.toml` matches that version.

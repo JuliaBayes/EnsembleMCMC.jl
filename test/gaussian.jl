@@ -154,7 +154,7 @@
             scale, valid = EnsembleMCMC._fit_gaussian!(fit.anchor, fit.mean, fit.factor,
                 copy(X), size(X, 2), :auto)
             @test valid
-            [EnsembleMCMC._gaussian_squared_distance!(zeros(3), p, fit, scale) for p in eachcol(points)]
+            [EnsembleMCMC._gaussian_half_squared_distance!(zeros(3), p, fit, scale) for p in eachcol(points)]
         end
         @test distances(matrix * X .+ shift, matrix * points .+ shift) ≈ distances(X, points) rtol=1e-8
     end

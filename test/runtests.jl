@@ -252,6 +252,8 @@ end
 include("norm.jl")
 include("gaussian.jl")
 include("batched.jl")
+include("overflow.jl")
+test_proposal_overflow()
 include("kernel.jl")
 
 include("integration.jl")
