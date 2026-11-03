@@ -9,29 +9,30 @@ Ensemble MCMC with Stretch, differential-evolution, snooker, and Gaussian replac
 Supports fixed move mixtures, threaded evaluation, and in-process continuable sampling.
 
 ```julia
-using EnsembleMCMC, Random, Random123
-using EnsembleMCMC: initialize, step!, sample!, current_state, acceptance_rate
+using EnsembleMCMC, Random
 
 # Sample a two-dimensional standard normal target.
 # Only the log density is needed, up to an additive constant.
 logdensity(x) = -(x[1]^2 + x[2]^2) / 2
 
-rng = Philox4x((42, 1))
+rng = Xoshiro(42)
 nwalkers = 24
 initial = randn(rng, 2, nwalkers)  # one walker per column
-state = initialize(rng, logdensity, initial; move=StretchMove())
-
-step!(state, 100)                 # discard 100 warmup sweeps
-draws = sample!(state, 1_000)     # retain 1,000 further sweeps
+draws = EnsembleMCMC.sample(rng, logdensity, initial, 1_000; warmup=100)
 size(draws.positions)            # (2, 24, 1000): coordinates × walkers × sweeps
 draws.positions[:, 1, 1]         # first walker's first retained position
-acceptance_rate(state)           # cumulative acceptance rate per move
 ```
 
-Each sweep updates every walker. Walkers interact and are not independent chains.
-For independent chains, give each chain its own key, for example `Philox4x((seed, chain))`.
-Reusing one RNG object gives identical chains.
+This one-call API is on `dev` for 0.1.0. Install it with
+`Pkg.add(url="https://github.com/JuliaBayes/EnsembleMCMC.jl", rev="dev")`.
 
-`sample!(state, n; thin=1)` stores every `thin`-th sweep. `snapshot(state)` is an in-process copy, not a checkpoint.
+Each sweep updates every walker. Walkers interact and are not independent chains.
+Each call to `sample` advances the supplied RNG to seed a new ensemble.
+Choose warmup and run length for the target; sampling does not test convergence.
+
+For in-process continuation, use `initialize`, `step!` and `sample!`. `initialize`
+requires and copies a Random123 `Philox4x` or `Threefry4x` RNG without advancing it.
+Use a distinct RNG key for each independent state. `sample!(state, n; thin=1)`
+stores every `thin`-th sweep. `snapshot(state)` is an in-process copy, not a checkpoint.
 
 [Documentation](https://juliabayes.org/EnsembleMCMC.jl/) · [Apache 2.0 license](LICENSE.md)

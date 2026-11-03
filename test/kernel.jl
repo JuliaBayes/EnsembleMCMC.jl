@@ -4,6 +4,14 @@ function test_kernel_executor(device=copy)
         scalar(x::Vector) = -sum(abs2, x) / 2
         batch!(values, positions) = (values .= vec(-sum(abs2, positions; dims=1) / 2))
         target = BatchedLogDensity(scalar, batch!)
+        @testset "Disabled mixture component" begin
+            points = device([-1.0 0 1 0; 0 -1 0 1])
+            move = MoveMixture((StretchMove(), GaussianReplacementMove(shrinkage=0)), (1, 0))
+            state = initialize(test_rng(), target, points; move, executor=KernelExecutor())
+            reference = initialize(test_rng(), target, points; executor=KernelExecutor())
+            @test Array(sample!(state, 5).positions) == Array(sample!(reference, 5).positions)
+            @test current_state(state).attempts == [20, 0]
+        end
         @testset "Log-density offsets preserve acceptance" begin
             points = Float32[-1 0 1 0 -1 -1 1 1; 0 -1 0 1 -1 1 -1 1]
             states = map((0f0, -1f10)) do offset

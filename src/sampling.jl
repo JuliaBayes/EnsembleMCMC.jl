@@ -49,6 +49,8 @@ selection probabilities after normalization, regardless of weight types.
 `schedule=:cycle` gives a repeating weighted cycle in component order and
 requires integer-valued weights. Weights must be finite and nonnegative,
 with at least one positive weight. The schedule and weights do not adapt.
+Zero-weight components keep their indices but do not increase the required
+walker count.
 """
 struct MoveMixture{M<:Tuple,W<:AbstractVector}
     moves::M
@@ -78,6 +80,28 @@ struct MoveMixture{M<:Tuple,W<:AbstractVector}
         new{typeof(ms),typeof(ws)}(ms, ws)
     end
 end
+
+"""
+    minimum_walkers(move, dimension)
+
+Return the minimum walker count for a built-in move or [`MoveMixture`](@ref)
+in a positive dimension. Only positive-weight mixture components contribute.
+This is a validity requirement, not a recommended population or a convergence
+guarantee. [`initialize`](@ref) also checks finite positions and affine rank,
+and rechecks the requirement after converting move parameters to the coordinate
+precision.
+"""
+function minimum_walkers(move::Union{AbstractEnsembleMove,MoveMixture}, dimension::Integer)
+    dimension > 0 || throw(ArgumentError("Dimension must be positive"))
+    return _minimum_walkers(move, dimension)
+end
+
+_minimum_walkers(move::MoveMixture, dimension) =
+    _minimum_walkers(move.moves, move.weights, dimension)
+_minimum_walkers(moves::Tuple, weights, dimension) = maximum(
+    _minimum_walkers(moves[i], dimension) for
+    i in eachindex(moves) if isnothing(weights) || weights[i] > 0
+)
 
 const _PROPOSALS_PER_PURPOSE = typemax(Int16) - 2
 const _COMPANION_PURPOSE = 5
@@ -291,7 +315,7 @@ function initialize(
         (prepare_move(move, T, d),)
     length(moves) <= _PROPOSALS_PER_PURPOSE || throw(ArgumentError("Too many mixture components"))
     n = length(positions)
-    required = maximum(m -> minimum_walkers(m, d), moves)
+    required = _minimum_walkers(moves, move isa MoveMixture ? move.weights : nothing, d)
     n >= required || throw(ArgumentError(
         "Too few walkers: $n given, the selected moves need $required in $d dimensions"))
     moves = map(m -> _allocate_move(m, positions), moves)
@@ -639,9 +663,7 @@ checkpoints, progress output or custom storage, call [`step!`](@ref) in a loop
 and keep [`snapshot`](@ref)s or read [`current_state`](@ref) after each sweep.
 """
 function sample!(state::EnsembleState, nsamples::Integer; thin::Integer=1)
-    nsamples >= 0 || throw(ArgumentError("Sample count must be nonnegative"))
-    thin >= 1 || throw(ArgumentError("thin must be positive"))
-    nsamples <= typemax(Int) ÷ thin || throw(ArgumentError("Sweep count overflows"))
+    _check_sample_count(nsamples, thin)
     state.valid || throw(ArgumentError("Cannot resume a state after a failed sweep"))
     history = _allocate_history(state, nsamples, state.batch_workspace)
     for sample in 1:nsamples
@@ -649,6 +671,54 @@ function sample!(state::EnsembleState, nsamples::Integer; thin::Integer=1)
         _store_history!(history, state, sample, state.batch_workspace)
     end
     return (; history..., walker_ids=copy(state.walker_ids))
+end
+
+"""
+    sample([rng::AbstractRNG], logdensity, initial, nsamples;
+           warmup=0, thin=1, kwargs...)
+
+Sample one coupled ensemble in one call. Discard `warmup` complete sweeps,
+then retain `nsamples` sweeps separated by `thin` steps. Return the same owned
+history as [`sample!`](@ref), with axes (coordinate, walker, sample) for positions.
+The first retained sweep is `warmup + thin`. Warmup discards samples; it does
+not adapt the sampler or check convergence.
+
+Any `AbstractRNG` is accepted. Two `UInt64` draws seed a private `Philox4x` RNG.
+The parent RNG advances, so repeated calls produce fresh ensembles. Equal parent
+seeds and inputs reproduce a run in the same environment. Omitted `rng` uses
+`Random.default_rng()`. This differs from [`initialize`](@ref), which copies a
+supported Random123 RNG without advancing it.
+
+Pass `move`, `executor`, `walker_ids` and cached `logdensities` through `kwargs`
+to `initialize`. Use `initialize`, [`step!`](@ref) and `sample!` directly when
+continuation, cumulative diagnostics or custom storage is needed.
+"""
+function sample(
+    rng::AbstractRNG,
+    logdensity,
+    initial,
+    nsamples::Integer;
+    warmup::Integer=0,
+    thin::Integer=1,
+    kwargs...,
+)
+    _check_sample_count(nsamples, thin)
+    0 <= warmup <= typemax(Int) - nsamples * thin ||
+        throw(ArgumentError("Warmup must be nonnegative and the total sweep count must fit in Int"))
+    sampler_rng = Philox4x((rand(rng, UInt64), rand(rng, UInt64)))
+    state = initialize(sampler_rng, logdensity, initial; kwargs...)
+    step!(state, warmup)
+    return sample!(state, nsamples; thin)
+end
+
+sample(logdensity, initial, nsamples::Integer; kwargs...) =
+    sample(Random.default_rng(), logdensity, initial, nsamples; kwargs...)
+
+function _check_sample_count(nsamples, thin)
+    nsamples >= 0 || throw(ArgumentError("Sample count must be nonnegative"))
+    thin >= 1 || throw(ArgumentError("thin must be positive"))
+    nsamples <= typemax(Int) ÷ thin || throw(ArgumentError("Sweep count overflows"))
+    return nothing
 end
 
 function _allocate_history(state, nsweeps, workspace)

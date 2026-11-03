@@ -14,8 +14,8 @@ export BatchedLogDensity
 
 # The generic verbs stay unexported so they do not clash with adapter packages.
 @static if VERSION >= v"1.11.0-DEV.469"
-    eval(Expr(:public, :initialize, :step!, :sample!, :current_state, :snapshot,
-        :synchronize!, :validate_positions, :acceptance_rate))
+    eval(Expr(:public, :sample, :initialize, :step!, :sample!, :current_state, :snapshot,
+        :synchronize!, :validate_positions, :minimum_walkers, :acceptance_rate))
 end
 
 include("rng.jl")

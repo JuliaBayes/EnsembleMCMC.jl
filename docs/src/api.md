@@ -4,13 +4,14 @@
 CurrentModule = EnsembleMCMC
 ```
 
-These functions are not exported. Import them with `using EnsembleMCMC: initialize,
+These functions are not exported. Import them with `using EnsembleMCMC: sample, initialize,
 step!, sample!, current_state, snapshot, synchronize!, validate_positions,
-acceptance_rate`, or call them qualified. On Julia 1.11 and later they are `public`.
+minimum_walkers, acceptance_rate`, or call them qualified. On Julia 1.11 and later they are `public`.
 
 ## Sampling
 
 ```@docs
+sample
 initialize
 step!
 sample!
@@ -29,6 +30,7 @@ DEMove
 DESnookerMove
 GaussianReplacementMove
 MoveMixture
+minimum_walkers
 ```
 
 ## Execution
