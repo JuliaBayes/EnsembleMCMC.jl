@@ -1,5 +1,9 @@
 # Development
 
+`main` tracks releases. Target feature and API pull requests at `dev`, which
+contains work for the next release. Both branches run CI. Merge a tested release
+from `dev` to `main` before tagging it. Documentation deploys from `main`.
+
 Run package tests from the repository root:
 
 ```sh
