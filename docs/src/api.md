@@ -4,9 +4,9 @@
 CurrentModule = EnsembleMCMC
 ```
 
-These functions are not exported. Import them with `using EnsembleMCMC: sample, initialize,
-step!, sample!, current_state, snapshot, synchronize!, validate_positions,
-minimum_walkers, acceptance_rate`, or call them qualified. On Julia 1.11 and later they are `public`.
+Call sampling functions with qualified names, such as `EnsembleMCMC.sample`.
+Move and executor types are exported. Individual functions can also be imported,
+for example with `using EnsembleMCMC: initialize, step!, sample!`.
 
 ## Sampling
 
@@ -17,8 +17,6 @@ step!
 sample!
 current_state
 snapshot
-synchronize!
-validate_positions
 acceptance_rate
 ```
 
@@ -40,4 +38,11 @@ BatchedLogDensity
 SerialExecutor
 ThreadedExecutor
 KernelExecutor
+```
+
+## Adapter support
+
+```@docs
+synchronize!
+validate_positions
 ```

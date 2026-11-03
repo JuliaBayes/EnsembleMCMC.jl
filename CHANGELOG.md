@@ -4,7 +4,8 @@
 
 - Add `sample([rng], logdensity, initial, nsamples; warmup=0, thin=1)` for one-call inference with any `AbstractRNG`.
 - Expose `minimum_walkers(move, dimension)` for move-aware initialization. Zero-weight mixture components no longer increase the required walker count.
-- Define the planned 0.1 API and the scope of seeded replay guarantees.
+- Define the public API and the scope of seeded replay guarantees.
+- Add an inference tutorial and practical guides, match Wren's documentation styling, and retain documentation for each release.
 
 ## 0.0.5 — 2026-11-02
 
