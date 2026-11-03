@@ -94,25 +94,45 @@ jobs:
           name: documentation
           path: docs/build
           if-no-files-found: error
-      - uses: actions/upload-pages-artifact@v5
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-        with:
-          path: docs/build
 
   deploy-docs:
     name: Deploy documentation
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/dev' || startsWith(github.ref, 'refs/tags/v'))
     needs: [test, coverage, docs]
     runs-on: ubuntu-latest
     permissions:
+      contents: write
       pages: write
       id-token: write
     concurrency:
       group: github-pages
       cancel-in-progress: false
+      queue: max
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v3.3.0
+      - name: Install documentation environment
+        run: julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'
+      - uses: actions/download-artifact@v8
+        with:
+          name: documentation
+          path: docs/build
+      - name: Retain versioned documentation
+        run: julia --project=docs docs/deploy.jl
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v7
+        with:
+          ref: gh-pages
+          path: documentation-site
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: documentation-site
       - uses: actions/deploy-pages@v5
         id: deployment

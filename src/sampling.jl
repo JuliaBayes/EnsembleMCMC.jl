@@ -17,10 +17,9 @@ concurrent calls. A deterministic target gives the same trajectory as
 for any `min_chunk`. An error in the target is rethrown unwrapped, as with
 [`SerialExecutor`](@ref), after all tasks of the group finish.
 
-Each group costs a task spawn and join of a few microseconds per task. Use
-[`SerialExecutor`](@ref) when one walker update costs less than about a
-microsecond, or raise `min_chunk` so that each task does at least tens of
-microseconds of work.
+Task overhead can make cheap targets slower than [`SerialExecutor`](@ref).
+Raise `min_chunk` to reduce the number of tasks. Compare full sampling runs
+with the target and hardware you intend to use.
 """
 struct ThreadedExecutor <: AbstractExecutor
     min_chunk::Int
@@ -659,7 +658,7 @@ every sweep. The initial positions are not included.
 
 The history is allocated up front and returned only on success. An exception
 during a sweep invalidates the state and loses the collected history. For
-checkpoints, progress output or custom storage, call [`step!`](@ref) in a loop
+saved samples, progress output or custom storage, call [`step!`](@ref) in a loop
 and keep [`snapshot`](@ref)s or read [`current_state`](@ref) after each sweep.
 """
 function sample!(state::EnsembleState, nsamples::Integer; thin::Integer=1)

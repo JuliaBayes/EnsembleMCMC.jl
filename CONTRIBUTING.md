@@ -2,7 +2,7 @@
 
 `main` tracks releases. Target feature and API pull requests at `dev`, which
 contains work for the next release. Both branches run CI. Merge a tested release
-from `dev` to `main` before tagging it. Documentation deploys from `main`.
+from `dev` to `main` before tagging it.
 
 Run package tests from the repository root:
 
@@ -21,9 +21,23 @@ julia --project=docs docs/make.jl
 therefore runs the doctests. They are not part of `Pkg.test()`, which has no Documenter dependency.
 
 Generated HTML is in `docs/build`. Serve that directory with a local HTTP server
-to view it. CI uploads the same build as a `documentation` artifact. Successful
-tests and docs builds on `main` deploy it to
-<https://juliabayes.org/EnsembleMCMC.jl/> through GitHub Pages.
+to view it. CI uploads the same build as a `documentation` artifact.
+
+After tests, coverage, and docs pass, CI publishes `dev` builds and release tags
+through GitHub Pages. `docs/deploy.jl` uses Documenter to retain each release on
+`gh-pages`. The whole archive is then deployed to
+<https://juliabayes.org/EnsembleMCMC.jl/>. The version selector lists every release
+and `dev`, with `stable` pointing to the latest release. Keep release numbers out
+of the guide prose.
+
+TagBot explicitly dispatches CI for tags whose docs are missing. Its token cannot
+trigger CI through a tag push alone. To retry a failed release build, run the CI
+workflow manually at that tag. Tags created before this deployment setup need a
+one-time backfill from their original source. Do not build current docs under an
+old release label. Preserve the existing `gh-pages` archive when adding pages.
+
+GitHub Pages uses workflow publishing. Its `github-pages` environment must allow
+deployments from `dev` and release tags. No separate deploy key is needed.
 
 CI checks Julia 1.10 (1 and 4 threads), current stable Julia, a pre-release Julia
 (allowed to fail), serial and threaded execution, Linux/macOS/Windows, and strict

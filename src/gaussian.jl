@@ -17,7 +17,8 @@ correlations, a positive value makes the proposal too wide and acceptance
 collapses. `shrinkage=0` uses `C` unchanged.
 
 Uses two groups and requires at least `max(2d, 4)` walkers, or `2(d+1)` when
-`shrinkage=0`. Use at least `4d` walkers for good acceptance.
+`shrinkage=0`. More walkers give the covariance fit more points. Acceptance
+still depends on the target.
 
 A non-finite or non-positive-definite fit rejects every proposal of the group.
 The move does not warn. Acceptances that stay at zero (`current_state(state).acceptances`)
