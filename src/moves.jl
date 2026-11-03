@@ -72,9 +72,9 @@ group_count(::StretchMove) = 2
 group_count(::DEMove) = 2
 group_count(::DESnookerMove) = 4
 
-minimum_walkers(::StretchMove, dimension::Integer) = 2 * dimension
-minimum_walkers(::Union{DEMove,DESnookerMove}, dimension::Integer) =
-    max(2 * dimension, 4)
+_minimum_walkers(::StretchMove, dimension::Integer) = Base.checked_mul(2, dimension)
+_minimum_walkers(::Union{DEMove,DESnookerMove}, dimension::Integer) =
+    max(Base.checked_mul(2, dimension), 4)
 
 function prepare_move(move::StretchMove, ::Type{T}, ::Integer) where {T<:Real}
     F = float(T)

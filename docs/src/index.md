@@ -22,13 +22,13 @@ For features not yet in the registered release, install the development version:
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/JuliaBayes/EnsembleMCMC.jl")
+Pkg.add(url="https://github.com/JuliaBayes/EnsembleMCMC.jl", rev="dev")
 ```
 
 ## Importing the verbs
 
-The generic verbs `initialize`, `step!`, `sample!`, `current_state`, `snapshot`,
-`synchronize!`, `validate_positions` and `acceptance_rate` are not exported. The
+The generic verbs `sample`, `initialize`, `step!`, `sample!`, `current_state`, `snapshot`,
+`synchronize!`, `validate_positions`, `minimum_walkers` and `acceptance_rate` are not exported. The
 package is mainly used through adapters such as BAT.jl, and these names clash with
 StatsBase and AbstractMCMC. Import them, or call them qualified:
 
@@ -43,8 +43,29 @@ exported.
 ## Sample a target
 
 Supply an unnormalized log density and either a coordinate-by-walker matrix or
-an initial vector of coordinate vectors. The following example discards warmup
-and collects two consecutive sample blocks.
+an initial vector of coordinate vectors. [`sample`](@ref) takes any `AbstractRNG`,
+discards warmup, and returns retained sweeps in one call:
+
+```jldoctest one_call
+using EnsembleMCMC, Random
+
+rng = Xoshiro(42); initial = randn(rng, 2, 24);
+
+draws = EnsembleMCMC.sample(rng, x -> -sum(abs2, x) / 2, initial, 200; warmup=100);
+
+size(draws.positions)
+
+# output
+
+(2, 24, 200)
+```
+
+`sample` advances the parent RNG by two `UInt64` draws to seed an owned Philox RNG.
+Repeated calls with the same parent RNG start distinct ensembles. This entry point
+is available on `dev` for 0.1.0.
+
+For in-process continuation, initialize a state with a Random123 RNG. The following
+example discards warmup and collects two consecutive sample blocks.
 
 ```jldoctest quickstart
 using EnsembleMCMC, Random, Random123
@@ -72,7 +93,20 @@ println((size(draws.positions), size(more.positions), current_state(state).sweep
 This checks usage, not convergence. Choose warmup and run length for your target.
 
 `sample!(state, n; thin=1)` runs `n * thin` sweeps and stores every `thin`-th one.
-`acceptance_rate(state)` returns the cumulative acceptance rate of each move.
+`acceptance_rate(state)` returns the cumulative acceptance rate of each move,
+including warmup. To measure production only, copy the counters after warmup:
+
+```julia
+before = current_state(state)
+attempts = copy(before.attempts)
+acceptances = copy(before.acceptances)
+draws = sample!(state, 1_000)
+after = current_state(state)
+production_acceptance = (after.acceptances .- acceptances) ./ (after.attempts .- attempts)
+```
+
+A move with no production attempts has rate `NaN`.
+
 The history of `sample!` is allocated up front and returned only on success. If
 the target throws during a sweep, the state becomes invalid and the collected
 history is lost. For full control, call `step!` in a loop and keep `snapshot`s.
@@ -182,6 +216,12 @@ walkers, which limits the task count for cheap targets. Results do not depend on
 `min_chunk`. An error in the target is rethrown as the original exception.
 
 ### Executors and reproducibility
+
+Seeded runs with a deterministic target are reproducible with the same inputs,
+RNG address, executor, and software and hardware environment. Thread scheduling
+and `min_chunk` do not affect the logical walker streams. Bitwise replay across
+package, Julia, dependency, backend, or hardware versions is not guaranteed.
+Numerical fixes can change trajectories; release notes record known changes.
 
 `SerialExecutor`, `ThreadedExecutor` and `KernelExecutor` on the CPU give bitwise
 identical trajectories for `StretchMove` and `DEMove`. `DESnookerMove` and
@@ -303,12 +343,14 @@ and snooker move along lines through other walkers, so a start far outside the
 support may never recover. Start inside the support when possible. Non-finite
 initial values (NaN, `+Inf`) throw an error that names the walker.
 
+Use [`minimum_walkers`](@ref) to query the required population for a move and
+dimension. Zero-weight mixture components do not increase that requirement.
 Stretch requires at least `2d` walkers. DE and snooker require at
 least `max(2d, 4)`. A target may return `-Inf` or `NaN` for proposals outside its
 support. Both are rejected, as in Stan. A `+Inf` candidate throws an error that
 names the walker and the sweep, and invalidates the state.
 
-| Field returned by `sample!` | Meaning |
+| Field returned by `sample` and `sample!` | Meaning |
 | --- | --- |
 | `positions` | coordinate × walker × sweep |
 | `logdensities` | walker × sweep |
@@ -339,8 +381,19 @@ Affine equivariance does not solve multimodality.
 
 Coordinate transforms, automatic initialization, and diagnostic integration
 remain outside this package.
-AbstractMCMC and LogDensityProblems adapters are not included. The interface is
-experimental during the initial 0.0 series.
+AbstractMCMC and LogDensityProblems adapters are not included.
+
+## Compatibility
+
+The interface is experimental during the initial 0.0 series. The planned 0.1
+series will preserve the documented move, target and executor constructors,
+sampling methods, keywords, defaults, and result fields within patch releases.
+This includes the qualified methods documented in the [API](@ref), even though
+they are not exported.
+
+Concrete sampler state fields and constructors, scratch storage, RNG partition
+helpers, and undocumented extension hooks are internal. Use the documented
+inspection and sampling methods instead of accessing state fields.
 
 ## License
 

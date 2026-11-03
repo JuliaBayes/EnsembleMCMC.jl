@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add `sample([rng], logdensity, initial, nsamples; warmup=0, thin=1)` for one-call inference with any `AbstractRNG`.
+- Expose `minimum_walkers(move, dimension)` for move-aware initialization. Zero-weight mixture components no longer increase the required walker count.
+- Define the planned 0.1 API and the scope of seeded replay guarantees.
+
 ## 0.0.5 — 2026-11-02
 
 - Preserve finite Stretch and DE proposals when intermediate subtraction or multiplication overflows.

@@ -1,5 +1,67 @@
 error_of(f) = try f(); nothing; catch err; err; end
 
+@testset "One-call sampling" begin
+    initial = initial_walkers()
+    saved_initial = deepcopy(initial)
+    move = MoveMixture((StretchMove(), DEMove()), [2, 1]; schedule=:cycle)
+    parent = Xoshiro(91)
+    sampler_rng = Philox4x((rand(parent, UInt64), rand(parent, UInt64)))
+    state = initialize(sampler_rng, gaussian_logdensity, initial; move)
+    step!(state, 7)
+    expected = sample!(state, 9; thin=3)
+    rng = Xoshiro(91)
+    actual = EnsembleMCMC.sample(
+        rng,
+        gaussian_logdensity,
+        initial,
+        9;
+        move,
+        warmup=7,
+        thin=3,
+        logdensities=gaussian_logdensity.(initial),
+    )
+    @test actual == expected
+    @test rand(rng, UInt64) == rand(parent, UInt64)
+    @test initial == saved_initial
+    @test EnsembleMCMC.sample(
+        Xoshiro(91),
+        gaussian_logdensity,
+        initial,
+        9;
+        move,
+        warmup=7,
+        thin=3,
+    ) == expected
+    @test EnsembleMCMC.sample(rng, gaussian_logdensity, initial, 9; move, warmup=7, thin=3).positions !=
+          expected.positions
+    @test size(EnsembleMCMC.sample(gaussian_logdensity, initial, 2).positions) == (2, 24, 2)
+end
+
+@testset "Move-aware walker counts" begin
+    for move in (
+        StretchMove(),
+        DEMove(),
+        DESnookerMove(),
+        GaussianReplacementMove(),
+        GaussianReplacementMove(shrinkage=0),
+    )
+        n = EnsembleMCMC.minimum_walkers(move, 2)
+        initial = initial_walkers()[1:n]
+        state = initialize(test_rng(), gaussian_logdensity, initial; move)
+        @test size(sample!(state, 2).positions) == (2, n, 2)
+    end
+    points = [-1.0 0 1 0; 0 -1 0 1]
+    for schedule in (:random, :cycle)
+        move = MoveMixture((StretchMove(), GaussianReplacementMove(shrinkage=0)), (1, 0); schedule)
+        @test EnsembleMCMC.minimum_walkers(move, 2) == 4
+        state = initialize(test_rng(), gaussian_logdensity, points; move)
+        reference = initialize(test_rng(), gaussian_logdensity, points)
+        @test sample!(state, 5).positions == sample!(reference, 5).positions
+        @test current_state(state).attempts == [20, 0]
+        @test isnan(acceptance_rate(state)[2])
+    end
+end
+
 struct TargetFailure <: Exception
     walker::Vector{Float64}
 end

@@ -43,8 +43,9 @@ end
 
 GaussianReplacementMove(; shrinkage::Union{Real,Symbol}=:auto) = GaussianReplacementMove(shrinkage)
 group_count(::GaussianReplacementMove) = 2
-minimum_walkers(move::GaussianReplacementMove, dimension::Integer) =
-    move.shrinkage !== :auto && iszero(move.shrinkage) ? 2 * (dimension + 1) : max(2 * dimension, 4)
+_minimum_walkers(move::GaussianReplacementMove, dimension::Integer) =
+    move.shrinkage !== :auto && iszero(move.shrinkage) ?
+    Base.checked_mul(2, Base.checked_add(dimension, 1)) : max(Base.checked_mul(2, dimension), 4)
 
 prepare_move(move::GaussianReplacementMove{Symbol}, ::Type{<:Real}, ::Integer) = move
 function prepare_move(move::GaussianReplacementMove, ::Type{T}, ::Integer) where {T<:Real}
