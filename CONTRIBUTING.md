@@ -61,6 +61,12 @@ The tests use the current device. Call `CUDA.device!(i)` before the include to
 choose another one. The file exits without a functional GPU. The multi-device block
 is skipped with an `@info` if no second device can open a context.
 
+The Reactant backend has a separate GPU test entry point:
+
+```sh
+julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.develop(path="."); Pkg.add(["CUDA", "Reactant", "Random123", "Test"]); include("test/reactant.jl")'
+```
+
 ## Before a release
 
 - Confirm all required CI jobs pass on the exact release commit. Review allowed-failure prerelease jobs separately.

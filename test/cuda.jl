@@ -40,6 +40,14 @@ function test_cuda()
         @test all(x -> x isa CUDA.AnyCuArray,
             (draws.positions, draws.logdensities, draws.accepted, saved.positions[1], saved.logdensities, saved.accepted))
 
+        logdensities = scalar.(eachcol(initial))
+        synchronize!(state, initial, logdensities)
+        borrowed = current_state(state)
+        synchronize!(state, borrowed.positions, borrowed.logdensities)
+        saved = snapshot(state)
+        @test reduce(hcat, Array.(saved.positions)) == initial
+        @test Array(saved.logdensities) == logdensities
+
         replacement = CuArray(initial)
         other = other_usable_device(CUDA.device(replacement))
         if isnothing(other)

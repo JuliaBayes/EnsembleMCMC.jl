@@ -37,6 +37,24 @@
         @test all(>(0), widths)
     end
 
+    @testset "Fixed batches preserve compacted transitions" begin
+        initial = [0.0 0 0 0 1 1 1 1]
+        move = MoveMixture((DESnookerMove(), StretchMove()), [1, 0])
+        expected = sample!(initialize(test_rng(), gaussian_logdensity, initial; move), 5)
+        for executor in (SerialExecutor(), KernelExecutor())
+            widths = Int[]
+            batch!(values, positions) = begin
+                push!(widths, size(positions, 2))
+                values .= gaussian_logdensity.(eachcol(positions))
+            end
+            target = BatchedLogDensity(gaussian_logdensity, batch!; batch_size=2)
+            actual = sample!(initialize(test_rng(), target, initial; move, executor), 5)
+            @test actual.positions ≈ expected.positions
+            @test actual.accepted == expected.accepted
+            @test !isempty(widths) && all(==(2), widths)
+        end
+    end
+
     @testset "Callback failure invalidates the state" begin
         initial = reduce(hcat, initial_walkers())
         failing_batch!(values, positions) = error("batch failed")

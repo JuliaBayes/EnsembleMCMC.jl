@@ -61,6 +61,12 @@ do not retain either array after the call. The sampler can pass views rather
 than plain arrays. A batch contains only valid proposals, so its column count
 can vary.
 
+For a callback compiled for one shape, set `BatchedLogDensity(scalar, batch!;
+batch_size=width)`. Choose a width large enough for every active proposal group.
+The sampler passes full buffers of that width and pads unused columns with the
+first valid proposal. Only real proposals affect acceptance. Empty groups skip
+the callback.
+
 Initialization calls `scalar` unless cached densities are supplied. Sampling
 calls `batch!` once per nonempty proposal group. With `ThreadedExecutor`, threads
 generate proposals, while the callback controls evaluation parallelism. Storage
@@ -108,3 +114,33 @@ round differently, so their trajectories need not match bit for bit.
 Invalid batch outputs, such as `+Inf` or unwritten entries, fail at the end of the
 sweep. Later group callbacks may run before that error is reported. A thrown
 callback stops the sweep immediately. Either failure invalidates the state.
+
+## Reactant
+
+Load both Reactant and CUDA to use a single-device PJRT array on a CUDA GPU with
+`KernelExecutor`. Compile the density once for a fixed batch width:
+
+```julia
+using Reactant, CUDA, EnsembleMCMC, Random
+
+Reactant.set_default_backend("gpu")
+rng = Xoshiro(42)
+initial = Reactant.to_rarray(randn(rng, 2, 32))
+scalar(x) = -sum(abs2, x) / 2
+function batch!(values, positions)
+    values .= vec(-sum(abs2, positions; dims=1) ./ 2)
+    return nothing
+end
+
+# StretchMove splits the 32 walkers into two groups of 16.
+values = similar(initial, 16)
+positions = similar(initial, 2, 16)
+compiled = Reactant.@compile batch!(values, positions)
+target = BatchedLogDensity(scalar, compiled; batch_size=16)
+draws = EnsembleMCMC.sample(rng, target, initial, 200; executor=KernelExecutor())
+host_positions = Array(draws.positions)
+```
+
+The sampler also reuses compiled proposal, acceptance and history operations.
+Setup includes compilation, so measure repeated sweeps separately when timing
+this backend. Device transfers follow the CUDA path described above.

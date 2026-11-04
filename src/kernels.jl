@@ -168,9 +168,9 @@ KA.@kernel function _compact_kernel!(indices, status, valid, n)
     end
 end
 
-KA.@kernel function _gather_kernel!(batchpositions, candidates, controls, indices)
+KA.@kernel function _gather_kernel!(batchpositions, candidates, controls, indices, n)
     coordinate, k = @index(Global, NTuple)
-    j = @inbounds indices[k]
+    j = @inbounds indices[k <= n ? k : 1]
     walker = @inbounds controls[1, j]
     @inbounds batchpositions[coordinate, k] = candidates[coordinate, walker]
 end
@@ -188,30 +188,33 @@ KA.@kernel function _accept_commit_kernel!(
     indices,
     logh,
     values,
+    n,
 )
     k = @index(Global, Linear)
-    j = @inbounds indices[k]
-    walker = @inbounds controls[1, j]
-    candidate_logdensity = @inbounds values[k]
-    # A NaN candidate is a rejection. +Inf fails the sweep in `_accepted_count`.
-    isnan(candidate_logdensity) && (candidate_logdensity = oftype(candidate_logdensity, -Inf))
-    bad = candidate_logdensity == Inf
-    @inbounds invalid[walker] = bad
-    @inbounds candidate_logdensities[walker] = candidate_logdensity
-    T = eltype(positions)
-    logratio = convert(
-        T,
-        (candidate_logdensity - @inbounds(logdensities[walker])) + @inbounds(logh[j]),
-    )
-    probability = isnan(logratio) ? zero(T) : clamp(exp(logratio), zero(T), one(T))
-    acceptance_probabilities[walker] = probability
-    accept = !bad && @inbounds(factors[2, j]) < probability
-    @inbounds accepted[walker] = accept
-    if accept
-        for coordinate in 1:size(positions, 1)
-            @inbounds positions[coordinate, walker] = candidates[coordinate, walker]
+    if k <= n
+        j = @inbounds indices[k]
+        walker = @inbounds controls[1, j]
+        candidate_logdensity = @inbounds values[k]
+        # A NaN candidate is a rejection. +Inf fails the sweep in `_accepted_count`.
+        isnan(candidate_logdensity) && (candidate_logdensity = oftype(candidate_logdensity, -Inf))
+        bad = candidate_logdensity == Inf
+        @inbounds invalid[walker] = bad
+        @inbounds candidate_logdensities[walker] = candidate_logdensity
+        T = eltype(positions)
+        logratio = convert(
+            T,
+            (candidate_logdensity - @inbounds(logdensities[walker])) + @inbounds(logh[j])
+        )
+        probability = isnan(logratio) ? zero(T) : clamp(exp(logratio), zero(T), one(T))
+        acceptance_probabilities[walker] = probability
+        accept = !bad && @inbounds(factors[2, j]) < probability
+        @inbounds accepted[walker] = accept
+        if accept
+            for coordinate = 1:size(positions, 1)
+                @inbounds positions[coordinate, walker] = candidates[coordinate, walker]
+            end
+            @inbounds logdensities[walker] = candidate_logdensity
         end
-        @inbounds logdensities[walker] = candidate_logdensity
     end
 end
 
