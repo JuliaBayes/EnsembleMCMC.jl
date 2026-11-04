@@ -1,4 +1,4 @@
-struct KernelWorkspace{T,P,L,V,I,C,F,A,S}
+struct KernelWorkspace{T,P,L,V,I,C,F,A,S,E}
     positions::P
     candidates::P
     batchpositions::P
@@ -13,9 +13,34 @@ struct KernelWorkspace{T,P,L,V,I,C,F,A,S}
     host_controls::Matrix{Int}
     host_factors::Matrix{T}
     host_status::Vector{Int}
+    execution::E
 end
 
 _with_kernel_device(f, initial) = f()
+_kernel_synchronize(array, arrays...) = KA.synchronize(KA.get_backend(array))
+_kernel_execution(initial) = nothing
+Base.@inline _kernel_execute(::Nothing, f::F, args...) where {F} = f(args...)
+_kernel_scalar(::Nothing, value) = value
+_host_scalar(value) = value
+_kernel_fill!(array, value) = fill!(array, value)
+_kernel_copyto!(dest, src) = copyto!(dest, src)
+_kernel_all(f, ::Type{T}, array) where {T} = all(x -> f(convert(T, x)), array)
+
+Base.@inline function _launch_kernel(kernel, ndrange, args...)
+    kernel(args...; ndrange)
+    return nothing
+end
+
+Base.@inline function _launch_kernel(w::KernelWorkspace, kernel::F, workgroup, ndrange, args...) where {F}
+    return _kernel_execute(w.execution, _launch_kernel,
+        kernel(KA.get_backend(w.positions), workgroup), ndrange, args...)
+end
+
+function _fill_batch!(values)
+    fill!(values, Inf)
+    return nothing
+end
+
 _kernel_move(move, initial) = move
 _kernel_move_supported(move) = false
 _kernel_move_supported(::Union{StretchMove,DEMove,DESnookerMove}) = true
@@ -35,6 +60,7 @@ function _initialize_kernel(rng, target, initial; logdensities=nothing, kwargs..
         all(_kernel_move_supported, moves) ||
             throw(ArgumentError("KernelExecutor supports only the built-in moves"))
         d, n = length(first(host.positions)), length(host.positions)
+        capacity = _batch_capacity(target, n, moves, host.weights)
         T, L = eltype(first(host.positions)), eltype(host.logdensities)
         positions = similar(initial, T, d, n)
         copyto!(positions, reduce(hcat, host.positions))
@@ -42,18 +68,19 @@ function _initialize_kernel(rng, target, initial; logdensities=nothing, kwargs..
         logds = similar(initial, L, n)
         copyto!(logds, host.logdensities)
         accepted = similar(initial, Bool, n)
-        fill!(accepted, false)
+        _kernel_fill!(accepted, false)
         probabilities = similar(initial, T, n)
-        fill!(probabilities, 0)
+        _kernel_fill!(probabilities, 0)
         status = similar(initial, Int, 3)
-        fill!(status, 0)
-        workspace = KernelWorkspace(positions, candidates, similar(positions),
-            similar(logds), similar(initial, T, n), similar(initial, Int, n),
+        _kernel_fill!(status, 0)
+        workspace = KernelWorkspace(positions, candidates, similar(positions, d, capacity),
+            similar(logds, capacity), similar(initial, T, n), similar(initial, Int, n),
             similar(initial, Int, 4, n), similar(initial, T, 2, n),
             similar(accepted), copy(accepted), status, zeros(Int, 4, n), zeros(T, 2, n),
-            zeros(Int, 3))
+            zeros(Int, 3), _kernel_execution(positions))
         candidate_logds = copy(logds)
-        KA.synchronize(KA.get_backend(positions))
+        _kernel_synchronize(positions, candidates, logds, candidate_logds, accepted,
+            probabilities, status)
         return EnsembleState(target, moves, host.weights, KernelExecutor(),
             host.rng, host.cycle_partition, host.walker_rngs, host.walker_ids, host.walker_order,
             collect(eachcol(positions)), collect(eachcol(candidates)), logds, candidate_logds,
@@ -67,11 +94,19 @@ function _step!(state, workspace::KernelWorkspace, args...)
             _step!(state, args...)
         catch
             # A callback can enqueue device work before throwing.
-            KA.synchronize(KA.get_backend(workspace.positions))
+            _kernel_synchronize(workspace.positions, workspace.candidates,
+                workspace.batchpositions, workspace.values, workspace.logh,
+                workspace.indices, workspace.controls, workspace.factors,
+                workspace.valid, workspace.invalid, workspace.status,
+                state.logdensities, state.candidate_logdensities,
+                state.accepted, state.acceptance_probabilities)
+            foreach(_synchronize_move, state.moves)
             rethrow()
         end
     end
 end
+
+_synchronize_move(move) = nothing
 
 function _stage_proposal!(controls, factors, j, move::StretchMove, rng, complement,
     companion_part, scale_part, id)
@@ -110,15 +145,14 @@ function _evaluate_group!(::KernelExecutor, state, move, part, move_index, propo
     end
     copyto!(w.controls, 1, w.host_controls, 1, 4n)
     copyto!(w.factors, 1, w.host_factors, 1, 2n)
-    backend = KA.get_backend(w.positions)
     if move isa DESnookerMove
-        _propose_snooker_kernel!(backend, 64)(w.candidates, w.positions, w.controls,
+        _launch_kernel(w, _propose_snooker_kernel!, 64, n, w.candidates, w.positions, w.controls,
             w.logh, w.valid, state.accepted, state.candidate_logdensities,
-            state.logdensities, state.acceptance_probabilities, move; ndrange=n)
+            state.logdensities, state.acceptance_probabilities, move)
         _compact!(w, n)
     else
-        _propose_linear_kernel!(backend, (32, 4))(w.candidates, w.positions, w.controls,
-            w.factors, w.logh, w.valid, w.indices, state.accepted, move; ndrange=(d, n))
+        _launch_kernel(w, _propose_linear_kernel!, (32, 4), (d, n), w.candidates,
+            w.positions, w.controls, w.factors, w.logh, w.valid, w.indices, state.accepted, move)
         w.host_status[1] = n
     end
     return nothing
@@ -127,41 +161,42 @@ end
 function _evaluate_batch!(w::KernelWorkspace, state, group, acceptance_part)
     n = w.host_status[1]
     iszero(n) && return nothing
-    backend = KA.get_backend(w.positions)
-    _gather_kernel!(backend, (32, 4))(w.batchpositions, w.candidates, w.controls,
-        w.indices; ndrange=(size(w.positions, 1), n))
-    values = view(w.values, 1:n)
+    fixed = !isnothing(state.logdensity.batch_size)
+    width = fixed ? length(w.values) : length(group)
+    count = _kernel_scalar(w.execution, n)
+    _launch_kernel(w, _gather_kernel!, (32, 4), (size(w.positions, 1), width),
+        w.batchpositions, w.candidates, w.controls, w.indices, count)
+    values = fixed ? w.values : view(w.values, 1:n)
+    positions = fixed ? w.batchpositions : view(w.batchpositions, :, 1:n)
     # An unwritten value stays +Inf and fails the sweep.
-    fill!(values, Inf)
-    state.logdensity.batch!(values, view(w.batchpositions, :, 1:n))
+    _kernel_execute(w.execution, _fill_batch!, w.values)
+    state.logdensity.batch!(values, positions)
     return nothing
 end
 
 function _compact!(w::KernelWorkspace, n)
-    backend = KA.get_backend(w.positions)
     # A fixed width compiles the kernel once for all ensemble sizes.
-    _compact_kernel!(backend, _SCAN_WIDTH)(w.indices, w.status, w.valid, n; ndrange=_SCAN_WIDTH)
+    _launch_kernel(w, _compact_kernel!, _SCAN_WIDTH, _SCAN_WIDTH, w.indices, w.status, w.valid, n)
     copyto!(w.host_status, 1, w.status, 1, 1)
-    KA.synchronize(backend)
+    _kernel_synchronize(w.status)
     return nothing
 end
 
 function _commit_group!(state, group, w::KernelWorkspace)
     n = w.host_status[1]
-    n > 0 && _accept_commit_kernel!(KA.get_backend(w.positions), 64)(w.positions, w.candidates,
+    n > 0 && _launch_kernel(w, _accept_commit_kernel!, 64, length(group), w.positions, w.candidates,
         state.logdensities, state.candidate_logdensities, state.accepted,
         state.acceptance_probabilities, w.invalid, w.controls, w.factors, w.indices, w.logh,
-        w.values; ndrange=n)
+        w.values, _kernel_scalar(w.execution, n))
     return nothing
 end
 
 # Linear moves use one explicit status synchronization per sweep.
 function _accepted_count(state, w::KernelWorkspace)
-    backend = KA.get_backend(w.positions)
-    _sweep_status_kernel!(backend, _SCAN_WIDTH)(w.status, state.accepted, w.invalid;
-        ndrange=_SCAN_WIDTH)
+    _launch_kernel(w, _sweep_status_kernel!, _SCAN_WIDTH, _SCAN_WIDTH,
+        w.status, state.accepted, w.invalid)
     copyto!(w.host_status, w.status)
-    KA.synchronize(backend)
+    _kernel_synchronize(w.status)
     i = w.host_status[2]
     iszero(i) || throw(DomainError(Inf, "Invalid batched log density for walker $i " *
         "(ID $(state.walker_ids[i])) in sweep $(state.step + 1): " *
@@ -179,7 +214,9 @@ function _snapshot(state, w::KernelWorkspace)
             accepted=copy(state.accepted), acceptance_probabilities=copy(state.acceptance_probabilities),
             walker_ids=copy(state.walker_ids), attempts=copy(state.attempts),
             acceptances=copy(state.accepts), move_index=state.active_index, sweep_count=state.step)
-        KA.synchronize(KA.get_backend(w.positions))
+        _kernel_synchronize(first(result.positions), first(result.candidates),
+            result.logdensities, result.candidate_logdensities, result.accepted,
+            result.acceptance_probabilities)
         result
     end
 end
@@ -194,19 +231,29 @@ function _allocate_history(state, nsweeps, w::KernelWorkspace)
 end
 function _store_history!(history, state, sweep, w::KernelWorkspace)
     _with_kernel_device(w.positions) do
-        copyto!(view(history.positions, :, :, sweep), w.positions)
-        copyto!(view(history.logdensities, :, sweep), state.logdensities)
-        copyto!(view(history.accepted, :, sweep), state.accepted)
-        KA.synchronize(KA.get_backend(w.positions))
+        index = _kernel_scalar(w.execution, sweep)
+        _kernel_execute(w.execution, _copy_kernel_history!, history.positions,
+            history.logdensities, history.accepted, w.positions, state.logdensities,
+            state.accepted, index)
+        _kernel_synchronize(history.positions, history.logdensities, history.accepted)
     end
     history.move_indices[sweep] = state.active_index
+    return nothing
+end
+
+function _copy_kernel_history!(positions, logdensities, accepted, current_positions,
+    current_logdensities, current_accepted, sweep)
+    positions[:, :, sweep] = current_positions
+    logdensities[:, sweep] = current_logdensities
+    accepted[:, sweep] = current_accepted
     return nothing
 end
 
 function _synchronize!(state, positions, logdensities, workspace::KernelWorkspace)
     return _with_kernel_device(workspace.positions) do
         _synchronize!(state, positions, logdensities, nothing)
-        KA.synchronize(KA.get_backend(workspace.positions))
+        _kernel_synchronize(workspace.positions, workspace.candidates, state.logdensities,
+            state.candidate_logdensities, state.accepted, state.acceptance_probabilities)
         state
     end
 end

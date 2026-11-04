@@ -19,14 +19,17 @@ LinearAlgebra = "1"
 PrecompileTools = "1.0.1"
 Random = "1"
 Random123 = "1.5"
+Reactant = "0.2.304"
 Statistics = "1"
 Test = "1"
 
 [weakdeps]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+Reactant = "3c362404-f566-11ee-1572-e11a4b42c853"
 
 [extensions]
 EnsembleMCMCCUDAExt = "CUDA"
+EnsembleMCMCReactantExt = ["CUDA", "Reactant"]
 
 [extras]
 Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"

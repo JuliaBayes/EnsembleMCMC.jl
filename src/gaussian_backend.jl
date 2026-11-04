@@ -7,17 +7,19 @@ end
 
 _kernel_move_supported(::_AllocatedGaussianMove) = true
 
+_synchronize_move(move::_AllocatedGaussianMove) =
+    _kernel_synchronize(move.anchor, move.mean, move.factor, move.scratch)
+
 function _prepare_gaussian_group!(w::KernelWorkspace, move, state, indices)
     n = length(indices)
     for (j, i) in enumerate(indices)
         w.host_controls[1, j] = i
     end
     copyto!(w.controls, 1, w.host_controls, 1, 4n)
-    backend = KA.get_backend(w.positions)
-    _gather_gaussian_complement_kernel!(backend, (32, 4))(
-        move.scratch, w.positions, w.controls; ndrange=(size(w.positions, 1), n))
+    _launch_kernel(w, _gather_gaussian_complement_kernel!, (32, 4),
+        (size(w.positions, 1), n), move.scratch, w.positions, w.controls)
     scale, valid = _fit_gaussian!(move.anchor, move.mean, move.factor, move.scratch, n,
-        move.shrinkage)
+        move.shrinkage, w.execution)
     return _FittedGaussianMove(move, scale, valid)
 end
 
@@ -30,12 +32,11 @@ function _evaluate_group!(::KernelExecutor, state, fitted::_FittedGaussianMove,
         w.host_controls[1, j] = i
     end
     copyto!(w.controls, 1, w.host_controls, 1, 4n)
-    backend = KA.get_backend(w.positions)
     if !fitted.valid
         w.host_status[1] = 0
-        _reject_gaussian_group_kernel!(backend, 64)(
+        _launch_kernel(w, _reject_gaussian_group_kernel!, 64, n,
             w.candidates, w.positions, state.candidate_logdensities, state.logdensities,
-            state.accepted, state.acceptance_probabilities, w.controls, w.valid; ndrange=n)
+            state.accepted, state.acceptance_probabilities, w.controls, w.valid)
         return nothing
     end
 
@@ -49,10 +50,10 @@ function _evaluate_group!(::KernelExecutor, state, fitted::_FittedGaussianMove,
     end
     copyto!(move.scratch, 1, move.host_scratch, 1, size(w.positions, 1) * n)
     copyto!(w.factors, 1, w.host_factors, 1, 2n)
-    _propose_gaussian_kernel!(backend, 64)(w.candidates, w.positions, w.controls,
+    _launch_kernel(w, _propose_gaussian_kernel!, 64, n, w.candidates, w.positions, w.controls,
         w.logh, w.valid, state.accepted, state.candidate_logdensities,
         state.logdensities, state.acceptance_probabilities, move.anchor, move.mean, move.factor,
-        move.scratch, fitted.scale; ndrange=n)
+        move.scratch, fitted.scale)
     _compact!(w, n)
     return nothing
 end

@@ -78,29 +78,46 @@ function _allocate_move(move::GaussianReplacementMove, positions)
 end
 
 # The fit is `anchor + scale * N(mean, L L')` with `L` in the lower triangle of `factor`.
-function _fit_gaussian!(anchor, mean, factor, scratch, n, shrinkage)
+function _fit_gaussian!(anchor, mean, factor, scratch, n, shrinkage, execution=nothing)
     T = eltype(mean)
     d = length(mean)
     centered = view(scratch, :, 1:n)
+    scale = _kernel_execute(execution, _center_gaussian!, anchor, centered)
+    host_scale = _host_scalar(scale)
+    isfinite(host_scale) && host_scale > zero(T) || return scale, false
+    valid = _kernel_execute(execution, _standardize_gaussian!, mean, centered, scale, n)
+    _host_scalar(valid) || return scale, false
+    if shrinkage isa Symbol
+        n > d && _gaussian_cholesky!(factor, centered, n, 1 + T(d) / n, execution) && return scale, true
+    end
+    s = _explicit_shrinkage(shrinkage, T)
+    _kernel_execute(execution, _gaussian_covariance!, factor, centered, n, one(T))
+    _kernel_execute(execution, _shrink_gaussian!, factor, s)
+    return scale, _host_scalar(_kernel_execute(execution, _gaussian_cholesky!, factor))
+end
+
+function _center_gaussian!(anchor, centered)
     # Subtract before scaling: `x / scale` rounds at ulp(x), far from the origin.
     anchor .= view(centered, :, 1)
     centered .-= anchor
-    scale = maximum(abs, centered)
-    isfinite(scale) && scale > zero(T) || return scale, false
+    return maximum(abs, centered)
+end
+
+function _standardize_gaussian!(mean, centered, scale, n)
     centered ./= scale
     sum!(reshape(mean, :, 1), centered)
     mean ./= n
     centered .-= mean
-    all(isfinite, mean) || return scale, false
-    if shrinkage isa Symbol
-        n > d && _gaussian_cholesky!(factor, centered, n, 1 + T(d) / n) && return scale, true
-    end
-    s = _explicit_shrinkage(shrinkage, T)
-    _gaussian_covariance!(factor, centered, n, one(T))
-    isotropic = s * tr(factor) / d
-    factor .*= one(T) - s
+    return all(isfinite, mean)
+end
+
+_gaussian_trace(factor) = tr(factor)
+
+function _shrink_gaussian!(factor, shrinkage)
+    isotropic = shrinkage * _gaussian_trace(factor) / size(factor, 1)
+    factor .*= one(eltype(factor)) - shrinkage
     view(factor, diagind(factor)) .+= isotropic
-    return scale, _gaussian_cholesky!(factor)
+    return nothing
 end
 
 _explicit_shrinkage(::Symbol, ::Type{T}) where {T} = inv(T(2))
@@ -109,9 +126,9 @@ _explicit_shrinkage(shrinkage::Real, ::Type) = shrinkage
 _gaussian_covariance!(factor, centered, n, inflation) =
     mul!(factor, centered, transpose(centered), inflation / (n - 1), zero(eltype(factor)))
 
-function _gaussian_cholesky!(factor, centered, n, inflation)
-    _gaussian_covariance!(factor, centered, n, inflation)
-    return _gaussian_cholesky!(factor)
+function _gaussian_cholesky!(factor, centered, n, inflation, execution=nothing)
+    _kernel_execute(execution, _gaussian_covariance!, factor, centered, n, inflation)
+    return _host_scalar(_kernel_execute(execution, _gaussian_cholesky!, factor))
 end
 
 function _gaussian_cholesky!(factor)

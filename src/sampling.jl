@@ -36,6 +36,7 @@ Execute proposals and acceptance with KernelAbstractions on the initial matrix's
 backend. Requires [`BatchedLogDensity`](@ref). Initialization evaluates the scalar
 callback on host vectors; sampling calls the batch callback with backend arrays.
 The caller places target data explicitly. CPU and CUDA arrays are supported.
+Loading Reactant and CUDA also enables single-device Reactant PJRT arrays on CUDA GPUs.
 """
 struct KernelExecutor <: AbstractExecutor end
 
@@ -338,7 +339,7 @@ function initialize(
         logdensity, moves, weights, executor, owned_rng, cycle_part,
         [rngpart_createrng(typeof(rng)) for _ in 1:n], ids, sortperm(ids),
         positions, deepcopy(positions), logds, copy(logds),
-        _batch_workspace(logdensity, positions, logds), fill(false, n), zeros(T, n),
+        _batch_workspace(logdensity, positions, logds, moves, weights), fill(false, n), zeros(T, n),
         zeros(Int, length(moves)), zeros(Int, length(moves)), 0, 0, true,
     )
 end
@@ -521,8 +522,14 @@ function _evaluate_batch!(workspace::BatchWorkspace, state, group, acceptance_pa
         end
     end
     iszero(count) && return nothing
-    values = view(workspace.values, 1:count)
-    positions = view(workspace.positions, :, 1:count)
+    values, positions = if isnothing(state.logdensity.batch_size)
+        view(workspace.values, 1:count), view(workspace.positions, :, 1:count)
+    else
+        for j in (count + 1):size(workspace.positions, 2)
+            copyto!(view(workspace.positions, :, j), view(workspace.positions, :, 1))
+        end
+        workspace.values, workspace.positions
+    end
     # +Inf is invalid, so unfilled entries still raise an error while NaN rejects.
     fill!(values, Inf)
     state.logdensity.batch!(values, positions)
@@ -768,18 +775,18 @@ function _synchronize!(state, positions, logdensities, ::Type{T}, ::Type{L}) whe
     length(positions) == length(logdensities) == length(state.positions) ||
         throw(DimensionMismatch("Walker counts must agree"))
     d = length(first(state.positions))
-    all(x -> length(x) == d && all(v -> isfinite(convert(T, v)), x), positions) ||
+    all(x -> length(x) == d && _kernel_all(isfinite, T, x), positions) ||
         throw(ArgumentError("Positions must have matching dimensions and finite coordinates"))
-    all(v -> !isnan(convert(L, v)) && convert(L, v) != Inf, logdensities) ||
+    _kernel_all(v -> !isnan(v) & (v != Inf), L, logdensities) ||
         throw(ArgumentError("Log densities must not contain NaN or +Inf"))
     for i in eachindex(positions)
-        copyto!(state.positions[i], positions[i])
-        copyto!(state.candidates[i], positions[i])
+        _kernel_copyto!(state.positions[i], positions[i])
+        _kernel_copyto!(state.candidates[i], positions[i])
     end
-    copyto!(state.logdensities, logdensities)
-    copyto!(state.candidate_logdensities, logdensities)
-    fill!(state.accepted, false)
-    fill!(state.acceptance_probabilities, 0)
+    _kernel_copyto!(state.logdensities, logdensities)
+    _kernel_copyto!(state.candidate_logdensities, logdensities)
+    _kernel_fill!(state.accepted, false)
+    _kernel_fill!(state.acceptance_probabilities, 0)
     state.active_index = 0
     return state
 end
