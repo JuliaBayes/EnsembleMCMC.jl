@@ -74,10 +74,10 @@ values to seed its own Philox RNG.
 
 ## Interface guarantees
 
-Patch releases preserve documented constructors, sampling methods, keywords,
-defaults, and result fields. This includes qualified functions that are not
-exported. Concrete state constructors and fields, scratch storage, RNG partition
+The public interface includes documented constructors, sampling methods, keywords,
+defaults, and result fields, including qualified functions that are not exported.
+Concrete state constructors and fields, scratch storage, RNG partition
 helpers, and undocumented extension hooks are internal.
 
 Seeded replay applies within a fixed software and hardware environment.
-Numerical corrections can change trajectories. Release notes record such changes.
+Numerical corrections can change trajectories.
