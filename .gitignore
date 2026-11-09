@@ -3,3 +3,4 @@ Manifest.toml
 *.mem
 lcov.info
 docs/build/
+docs/src/assets/logo.svg

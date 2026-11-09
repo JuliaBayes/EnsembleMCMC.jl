@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/JuliaBayes/EnsembleMCMC.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/JuliaBayes/EnsembleMCMC.jl/actions/workflows/CI.yml)
 [![Coverage](https://codecov.io/gh/JuliaBayes/EnsembleMCMC.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/JuliaBayes/EnsembleMCMC.jl)
-[![Docs](https://img.shields.io/badge/docs-stable-blue.svg)](https://juliabayes.org/EnsembleMCMC.jl/stable/)
+[![Docs](https://img.shields.io/badge/docs-stable-blue.svg)](https://juliabayes.org/EnsembleMCMC.jl/stable/) <a href="https://juliabayes.org/EnsembleMCMC.jl/stable/"><img src="assets/logo.svg" align="right" alt="EnsembleMCMC.jl logo" width="128" height="128"></a>
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE.md)
 
 Sample a log density with an ensemble of walkers. EnsembleMCMC provides Stretch,

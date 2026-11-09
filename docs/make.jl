@@ -4,6 +4,11 @@ using EnsembleMCMC
 
 DocMeta.setdocmeta!(EnsembleMCMC, :DocTestSetup, :(using EnsembleMCMC); recursive = true)
 
+# Documenter discovers the shared logo in its source assets directory.
+mkpath(joinpath(@__DIR__, "src", "assets"))
+cp(joinpath(@__DIR__, "..", "assets", "logo.svg"),
+   joinpath(@__DIR__, "src", "assets", "logo.svg"); force=true)
+
 makedocs(
     root = @__DIR__,
     sitename = "EnsembleMCMC.jl",
@@ -16,6 +21,7 @@ makedocs(
         prettyurls = true,
         edit_link = "dev",
         canonical = "https://juliabayes.org/EnsembleMCMC.jl/stable/",
+        assets = ["assets/logo.css"],
     ),
     pages = [
         "Getting started" => "index.md",
