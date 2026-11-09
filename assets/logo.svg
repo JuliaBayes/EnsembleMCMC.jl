@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="24 40 208 208" role="img" aria-labelledby="title desc">
   <title id="title">EnsembleMCMC.jl</title>
   <desc id="desc">Three walkers in Julia colours explore a shared probability landscape, leaving a trail of samples.</desc>
   <path d="M35 194 C66 194 75 171 92 162 C109 151 113 139 128 139 C143 139 147 151 164 162 C181 171 190 194 221 194 Z" fill="#4063D8" opacity=".09"/>
