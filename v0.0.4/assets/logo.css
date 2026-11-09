@@ -1,0 +1,5 @@
+#documenter .docs-sidebar .docs-logo > img {
+    width: 128px;
+    height: auto;
+    max-height: 128px;
+}

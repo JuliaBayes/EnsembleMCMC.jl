@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">EnsembleMCMC.jl</title>
+  <desc id="desc">Three walkers in Julia colours explore a shared probability landscape, leaving a trail of samples.</desc>
+  <path d="M35 194 C66 194 75 171 92 162 C109 151 113 139 128 139 C143 139 147 151 164 162 C181 171 190 194 221 194 Z" fill="#4063D8" opacity=".09"/>
+  <path d="M35 194 C66 194 75 171 92 162 C109 151 113 139 128 139 C143 139 147 151 164 162 C181 171 190 194 221 194" fill="none" stroke="#4063D8" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <g transform="translate(77 120)">
+    <circle cx="0" cy="0" r="13" fill="#389826"/>
+    <circle cx="4" cy="-1" r="2.4" fill="#FFFFFF"/>
+    <path d="M-5 15 C-14 20 -13 31 -7 35 C-3 38 8 38 11 32 C14 26 8 16 3 14 Z" fill="#389826"/>
+    <path d="M6 20 Q17 28 21 20 M-7 21 Q-18 22 -16 30" fill="none" stroke="#389826" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M-4 34 Q-6 43 -19 47 M5 34 Q12 40 21 43" fill="none" stroke="#389826" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <g transform="translate(128 88) scale(-1 1)">
+    <circle cx="0" cy="0" r="13" fill="#9558B2"/>
+    <circle cx="4" cy="-1" r="2.4" fill="#FFFFFF"/>
+    <path d="M-5 15 C-14 20 -13 31 -7 35 C-3 38 8 38 11 32 C14 26 8 16 3 14 Z" fill="#9558B2"/>
+    <path d="M6 20 Q17 28 21 20 M-7 21 Q-18 22 -16 30" fill="none" stroke="#9558B2" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M-4 34 Q-6 43 -19 47 M5 34 Q12 40 21 43" fill="none" stroke="#9558B2" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <g transform="translate(178 120)">
+    <circle cx="0" cy="0" r="13" fill="#CB3C33"/>
+    <circle cx="4" cy="-1" r="2.4" fill="#FFFFFF"/>
+    <path d="M-5 15 C-14 20 -13 31 -7 35 C-3 38 8 38 11 32 C14 26 8 16 3 14 Z" fill="#CB3C33"/>
+    <path d="M6 20 Q17 28 21 20 M-7 21 Q-18 22 -16 30" fill="none" stroke="#CB3C33" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M-4 34 Q-6 43 -19 47 M5 34 Q12 40 21 43" fill="none" stroke="#CB3C33" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <circle cx="64" cy="205" r="4.7" fill="#389826"/>
+  <circle cx="88" cy="199" r="4.7" fill="#389826"/>
+  <circle cx="111" cy="209" r="4.7" fill="#9558B2"/>
+  <circle cx="137" cy="201" r="4.7" fill="#9558B2"/>
+  <circle cx="163" cy="207" r="4.7" fill="#CB3C33"/>
+  <circle cx="187" cy="200" r="4.7" fill="#CB3C33"/>
+</svg>
