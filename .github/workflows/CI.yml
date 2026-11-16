@@ -35,7 +35,7 @@ jobs:
       - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.julia }}
-      - uses: julia-actions/cache@v3.3.0
+      - uses: julia-actions/cache@v3.5.0
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
 
@@ -54,7 +54,7 @@ jobs:
       - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
-      - uses: julia-actions/cache@v3.3.0
+      - uses: julia-actions/cache@v3.5.0
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
         with:
@@ -84,7 +84,7 @@ jobs:
       - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
-      - uses: julia-actions/cache@v3.3.0
+      - uses: julia-actions/cache@v3.5.0
       - name: Install documentation environment
         run: julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'
       - name: Build documentation
@@ -116,7 +116,7 @@ jobs:
       - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
-      - uses: julia-actions/cache@v3.3.0
+      - uses: julia-actions/cache@v3.5.0
       - name: Install documentation environment
         run: julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'
       - uses: actions/download-artifact@v8
