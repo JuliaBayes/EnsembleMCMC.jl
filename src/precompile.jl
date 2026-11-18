@@ -1,6 +1,7 @@
 @setup_workload begin
-    rng = Philox4x((42, 1))
-    ensembles = (randn(rng, Float64, 3, 12), randn(rng, Float32, 3, 12))
+    rng = PureRNGs.Philox4x64(42)
+    initial_rng = Xoshiro(42)
+    ensembles = (randn(initial_rng, Float64, 3, 12), randn(initial_rng, Float32, 3, 12))
     logdensity = x -> -sum(abs2, x) / 2
     batched = BatchedLogDensity(logdensity,
         (values, positions) -> map!(logdensity, values, eachcol(positions)))
@@ -17,7 +18,7 @@
             synchronize!(state, saved.positions, saved.logdensities)
             step!(state, rng; proposal_index=2)
         end
-        step!(initialize(Threefry4x((42, 1, 2, 3)), logdensity, first(ensembles);
+        step!(initialize(PureRNGs.Threefry4x64(42), logdensity, first(ensembles);
             move=DEMove()), 2)
         mixture = MoveMixture((StretchMove(), DEMove()), [0.5, 0.5])
         for initial in ensembles

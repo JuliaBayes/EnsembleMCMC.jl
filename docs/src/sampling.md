@@ -112,8 +112,8 @@ the quantities that matter for your analysis. High acceptance alone does not
 show that the ensemble explored the target. Low acceptance or walkers that stop
 moving can reveal a poor starting region or an unsuitable move.
 
-Each call to `sample` advances the supplied RNG and starts a new ensemble. Use
-fresh starting points for each run:
+Each call to `sample` with an `AbstractRNG` draws two `UInt64` words to seed a
+new ensemble. Use fresh starting points for each run.
 
 ```jldoctest independent
 using EnsembleMCMC, Random
@@ -137,9 +137,11 @@ as independent chains or add their effective sample sizes.
 ## Reproducibility
 
 Equal seeds and inputs reproduce a run with a deterministic target in the same
-software and hardware environment. Reusing an advancing RNG starts fresh runs.
-The lower-level `initialize` method instead copies its RNG without advancing it.
-See [Continuing a run](continuation.md).
+software and hardware environment. A PureRNGs generator passed to `sample` or
+`initialize` serves as a run key. Reusing it replays the same random streams
+even if you advance its position between calls. Use `subrng(root, run_id)`
+with distinct run IDs for independent ensembles. See
+[Continuing a run](continuation.md).
 
 Thread scheduling and `ThreadedExecutor`'s `min_chunk` do not change the random
 streams assigned to walkers. Different executors or hardware can round arithmetic

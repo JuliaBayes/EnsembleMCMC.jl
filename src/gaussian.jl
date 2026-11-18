@@ -59,7 +59,7 @@ struct _AllocatedGaussianMove{S,V,M,H} <: AbstractEnsembleMove
     mean::V
     factor::M
     scratch::M
-    host_scratch::H
+    host::H
 end
 
 struct _FittedGaussianMove{M,S} <: AbstractEnsembleMove
@@ -69,12 +69,14 @@ struct _FittedGaussianMove{M,S} <: AbstractEnsembleMove
 end
 
 group_count(::_AllocatedGaussianMove) = 2
+_companion_lanes(::_AllocatedGaussianMove) = 0
+_scale_width(::_AllocatedGaussianMove, d) = d
 
 function _allocate_move(move::GaussianReplacementMove, positions)
     d, n = length(first(positions)), length(positions)
     T = eltype(first(positions))
     return _AllocatedGaussianMove(move.shrinkage, Vector{T}(undef, d), Vector{T}(undef, d),
-        Matrix{T}(undef, d, d), Matrix{T}(undef, d, n), nothing)
+        Matrix{T}(undef, d, d), Matrix{T}(undef, d, n), (; log_hastings=Vector{T}(undef, n)))
 end
 
 # The fit is `anchor + scale * N(mean, L L')` with `L` in the lower triangle of `factor`.
@@ -137,54 +139,89 @@ function _gaussian_cholesky!(factor)
     return isposdef(fit) && all(isfinite, factor)
 end
 
-function _prepare_gaussian_group!(workspace, move, state, indices)
-    for (j, i) in enumerate(indices)
+_prepare_group!(move::_AllocatedGaussianMove, state, group, complement, streams) =
+    _prepare_gaussian_group!(state.batch_workspace, move, state, group, only(complement), streams)
+
+function _prepare_gaussian_group!(workspace, move, state, group, complement, streams)
+    for (j, i) in enumerate(complement)
         copyto!(view(move.scratch, :, j), state.positions[i])
     end
     scale, valid = _fit_gaussian!(move.anchor, move.mean, move.factor, move.scratch,
-        length(indices), move.shrinkage)
+        length(complement), move.shrinkage)
+    if valid
+        # Store each coordinate contiguously across the active walkers.
+        work = reshape(view(move.scratch, :, 1:length(group)), length(group), length(move.mean))
+        _gaussian_proposals!(work, move, state, group, scale, streams)
+    end
     return _FittedGaussianMove(move, scale, valid)
 end
 
-_prepare_group!(move::_AllocatedGaussianMove, state, group, complement) =
-    _prepare_gaussian_group!(state.batch_workspace, move, state, only(complement))
+function _gaussian_proposals!(work, move, state, group, scale, streams)
+    for (j, i) in enumerate(group)
+        _normal_column!(streams.scale, state.walker_ids[i], view(work, j, :))
+    end
+    _gaussian_multiply!(move.factor, work)
+    for (j, i) in enumerate(group)
+        noise = view(work, j, :)
+        candidate = state.candidates[i]
+        @. candidate = move.anchor + scale * (move.mean + noise)
+    end
 
-_gaussian_ldiv!(factor, scratch) = ldiv!(LowerTriangular(factor), scratch)
-function _gaussian_ldiv!(factor::StridedMatrix{T}, scratch::StridedVector{T}) where {T<:Union{Float32,Float64}}
-    length(scratch) > 128 && return ldiv!(LowerTriangular(factor), scratch)
-    # Small forward solves avoid BLAS call overhead and visit contiguous columns.
-    # Each walker owns a d-element scratch column and the factor is d-by-d.
-    @inbounds for j in eachindex(scratch)
-        x = scratch[j] / factor[j, j]
-        scratch[j] = x
-        @simd for i in (j + 1):length(scratch)
-            scratch[i] -= factor[i, j] * x
+    # The independence correction uses the rounded candidate coordinates.
+    logh = move.host.log_hastings
+    _gaussian_distances!(work, state.positions, group, move, scale) do i, distance
+        logh[i] = -distance
+    end
+    _gaussian_distances!(work, state.candidates, group, move, scale) do i, distance
+        logh[i] += distance
+    end
+    return nothing
+end
+
+# Multiply by the lower Cholesky factor, working backwards for an in-place product.
+function _gaussian_multiply!(factor, work)
+    for j in reverse(axes(work, 2))
+        x = view(work, :, j)
+        for i in (j + 1):size(work, 2)
+            y = view(work, :, i)
+            coefficient = factor[i, j]
+            @. y += coefficient * x
+        end
+        x .*= factor[j, j]
+    end
+    return work
+end
+
+# Forward substitution uses the same factor for every walker in the group.
+function _gaussian_solve!(factor, work)
+    for j in axes(work, 2)
+        x = view(work, :, j)
+        x ./= factor[j, j]
+        for i in (j + 1):size(work, 2)
+            y = view(work, :, i)
+            coefficient = factor[i, j]
+            @. y -= coefficient * x
         end
     end
-    return scratch
+    return work
 end
 
-function _gaussian_half_squared_distance!(scratch, position, move, scale)
-    @. scratch = (position - move.anchor) / scale - move.mean
-    _gaussian_ldiv!(move.factor, scratch)
-    # The half-square can fit even when the full squared residual overflows.
-    return sum(x -> (x / 2) * x, scratch)
+function _gaussian_distances!(store!, work, positions, group, move, scale)
+    for (j, i) in enumerate(group)
+        residual = view(work, j, :)
+        position = positions[i]
+        @. residual = (position - move.anchor) / scale - move.mean
+    end
+    _gaussian_solve!(move.factor, work)
+    for (j, i) in enumerate(group)
+        # The half-square can fit even when the full squared residual overflows.
+        store!(i, sum(x -> (x / 2) * x, view(work, j, :)))
+    end
+    return nothing
 end
 
-function propose!(candidate, fitted::_FittedGaussianMove, current,
-    walker_idx::Integer, complement_groups, rng::AbstractRNG,
-    step_rngpart::RNGPartition, proposal_idx::Integer, walkerid::Integer)
-    fitted.valid || return nothing
-    move, scale = fitted.move, fitted.scale
-    # Each walker owns a scratch column even when its proposal runs concurrently.
-    scratch = view(move.scratch, :, walker_idx)
-    set_rng!(rng, _walker_rngpart(step_rngpart, _SCALE_PURPOSE, proposal_idx), walkerid)
-    randn!(rng, scratch)
-    mul!(candidate, LowerTriangular(move.factor), scratch)
-    @. candidate = move.anchor + scale * (move.mean + candidate)
-    all(isfinite, candidate) || return nothing
-    current_distance = _gaussian_half_squared_distance!(scratch, current[walker_idx], move, scale)
-    # Use the rounded candidate, not the normal draw used to generate it.
-    candidate_distance = _gaussian_half_squared_distance!(scratch, candidate, move, scale)
-    return candidate_distance - current_distance
+function propose!(candidate, fitted::_FittedGaussianMove, current, walker_idx::Integer,
+    complement, streams, walker_id::Integer)
+    fitted.valid && all(isfinite, candidate) || return nothing
+    return fitted.move.host.log_hastings[walker_idx]
 end

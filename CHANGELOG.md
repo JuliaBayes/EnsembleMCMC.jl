@@ -4,6 +4,7 @@
 
 - Support single-device Reactant PJRT arrays with `KernelExecutor` and fixed-width density callbacks through `BatchedLogDensity(...; batch_size)`.
 - Add `sample([rng], logdensity, initial, nsamples; warmup=0, thin=1)` for one-call inference with any `AbstractRNG`.
+- Use PureRNGs to draw proposal and acceptance values in batches, indexed by walker ID. Accept PureRNGs run keys and retain Random123 adapter support through an extension. Seeded trajectories change.
 - Expose `minimum_walkers(move, dimension)` for move-aware initialization. Zero-weight mixture components no longer increase the required walker count.
 - Define the public API and the scope of seeded replay guarantees.
 - Add an inference tutorial and practical guides, match Wren's documentation styling, and retain documentation for each release.

@@ -36,11 +36,6 @@ Base.@inline function _launch_kernel(w::KernelWorkspace, kernel::F, workgroup, n
         kernel(KA.get_backend(w.positions), workgroup), ndrange, args...)
 end
 
-function _fill_batch!(values)
-    fill!(values, Inf)
-    return nothing
-end
-
 _kernel_move(move, initial) = move
 _kernel_move_supported(move) = false
 _kernel_move_supported(::Union{StretchMove,DEMove,DESnookerMove}) = true
@@ -82,16 +77,16 @@ function _initialize_kernel(rng, target, initial; logdensities=nothing, kwargs..
         _kernel_synchronize(positions, candidates, logds, candidate_logds, accepted,
             probabilities, status)
         return EnsembleState(target, moves, host.weights, KernelExecutor(),
-            host.rng, host.cycle_partition, host.walker_rngs, host.walker_ids, host.walker_order,
+            host.rng, host.rng_type, host.walker_ids, host.walker_order, host.draw_buffers,
             collect(eachcol(positions)), collect(eachcol(candidates)), logds, candidate_logds,
             workspace, accepted, probabilities, host.attempts, host.accepts, 0, 0, true)
     end
 end
 
-function _step!(state, workspace::KernelWorkspace, args...)
+function _step!(state, workspace::KernelWorkspace, sweep, proposal_index)
     return _with_kernel_device(workspace.positions) do
         try
-            _step!(state, args...)
+            _sweep!(state, sweep, proposal_index)
         catch
             # A callback can enqueue device work before throwing.
             _kernel_synchronize(workspace.positions, workspace.candidates,
@@ -108,40 +103,26 @@ end
 
 _synchronize_move(move) = nothing
 
-function _stage_proposal!(controls, factors, j, move::StretchMove, rng, complement,
-    companion_part, scale_part, id)
-    set_rng!(rng, companion_part, id)
-    controls[2, j] = rand(rng, only(complement))
-    set_rng!(rng, scale_part, id)
-    b = (move.scale - one(move.scale)) * rand(rng, eltype(factors)) + one(move.scale)
-    factors[1, j] = b * (b / move.scale)
+function _stage_proposal!(controls, factors, j, move::StretchMove, complement, streams, id)
+    controls[2, j], factors[1, j] = _proposal_parameters(move, complement, streams, id)
 end
-function _stage_proposal!(controls, factors, j, move::DEMove, rng, complement,
-    companion_part, scale_part, id)
-    set_rng!(rng, companion_part, id)
-    controls[2, j], controls[3, j] = _de_companion_indices(rng, only(complement))
-    set_rng!(rng, scale_part, id)
-    factors[1, j] = move.gamma0 * (one(move.sigma) + move.sigma * randn(rng, eltype(factors)))
+function _stage_proposal!(controls, factors, j, move::DEMove, complement, streams, id)
+    controls[2, j], controls[3, j], factors[1, j] =
+        _proposal_parameters(move, complement, streams, id)
 end
-function _stage_proposal!(controls, factors, j, move::DESnookerMove, rng, complement,
-    companion_part, scale_part, id)
-    set_rng!(rng, companion_part, id)
-    controls[2, j], controls[3, j], controls[4, j] = _de_snooker_companion_indices(rng, complement)
+function _stage_proposal!(controls, factors, j, move::DESnookerMove, complement, streams, id)
+    controls[2, j], controls[3, j], controls[4, j] =
+        _proposal_parameters(move, complement, streams, id)
 end
 
-function _evaluate_group!(::KernelExecutor, state, move, part, move_index, proposal_index,
-    group, complement, acceptance_part)
+function _evaluate_group!(::KernelExecutor, state, move, streams, group, complement)
     w = state.batch_workspace
     n, d = length(group), size(w.positions, 1)
-    companion_part = _walker_rngpart(part, _COMPANION_PURPOSE, proposal_index)
-    scale_part = _walker_rngpart(part, _SCALE_PURPOSE, proposal_index)
     for (j, i) in enumerate(group)
-        rng, id = state.walker_rngs[i], state.walker_ids[i]
+        id = state.walker_ids[i]
         w.host_controls[1, j] = i
-        _stage_proposal!(w.host_controls, w.host_factors, j, move, rng, complement,
-            companion_part, scale_part, id)
-        set_rng!(rng, acceptance_part, id)
-        w.host_factors[2, j] = rand(rng, eltype(w.host_factors))
+        _stage_proposal!(w.host_controls, w.host_factors, j, move, complement, streams, id)
+        w.host_factors[2, j] = _uniform_at(streams.acceptance, eltype(w.host_factors), id)
     end
     copyto!(w.controls, 1, w.host_controls, 1, 4n)
     copyto!(w.factors, 1, w.host_factors, 1, 2n)
@@ -158,18 +139,16 @@ function _evaluate_group!(::KernelExecutor, state, move, part, move_index, propo
     return nothing
 end
 
-function _evaluate_batch!(w::KernelWorkspace, state, group, acceptance_part)
+function _evaluate_batch!(w::KernelWorkspace, state, group, acceptance_rng)
     n = w.host_status[1]
     iszero(n) && return nothing
     fixed = !isnothing(state.logdensity.batch_size)
     width = fixed ? length(w.values) : length(group)
     count = _kernel_scalar(w.execution, n)
     _launch_kernel(w, _gather_kernel!, (32, 4), (size(w.positions, 1), width),
-        w.batchpositions, w.candidates, w.controls, w.indices, count)
+        w.batchpositions, w.values, w.candidates, w.controls, w.indices, count)
     values = fixed ? w.values : view(w.values, 1:n)
     positions = fixed ? w.batchpositions : view(w.batchpositions, :, 1:n)
-    # An unwritten value stays +Inf and fails the sweep.
-    _kernel_execute(w.execution, _fill_batch!, w.values)
     state.logdensity.batch!(values, positions)
     return nothing
 end

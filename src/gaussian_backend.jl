@@ -2,7 +2,7 @@ function _kernel_move(move::_AllocatedGaussianMove, initial)
     T = eltype(move.mean)
     d, n = size(initial)
     return _AllocatedGaussianMove(move.shrinkage, similar(initial, T, d), similar(initial, T, d),
-        similar(initial, T, d, d), similar(initial, T, d, n), Matrix{T}(undef, d, n))
+        similar(initial, T, d, d), similar(initial, T, d, n), (; normals=Matrix{T}(undef, d, n)))
 end
 
 _kernel_move_supported(::_AllocatedGaussianMove) = true
@@ -10,7 +10,7 @@ _kernel_move_supported(::_AllocatedGaussianMove) = true
 _synchronize_move(move::_AllocatedGaussianMove) =
     _kernel_synchronize(move.anchor, move.mean, move.factor, move.scratch)
 
-function _prepare_gaussian_group!(w::KernelWorkspace, move, state, indices)
+function _prepare_gaussian_group!(w::KernelWorkspace, move, state, group, indices, streams)
     n = length(indices)
     for (j, i) in enumerate(indices)
         w.host_controls[1, j] = i
@@ -24,7 +24,7 @@ function _prepare_gaussian_group!(w::KernelWorkspace, move, state, indices)
 end
 
 function _evaluate_group!(::KernelExecutor, state, fitted::_FittedGaussianMove,
-    part, move_index, proposal_index, group, complement, acceptance_part)
+    streams, group, complement)
     w = state.batch_workspace
     move = fitted.move
     n = length(group)
@@ -40,15 +40,12 @@ function _evaluate_group!(::KernelExecutor, state, fitted::_FittedGaussianMove,
         return nothing
     end
 
-    normal_part = _walker_rngpart(part, _SCALE_PURPOSE, proposal_index)
     for (j, i) in enumerate(group)
-        rng, id = state.walker_rngs[i], state.walker_ids[i]
-        set_rng!(rng, normal_part, id)
-        randn!(rng, view(move.host_scratch, :, j))
-        set_rng!(rng, acceptance_part, id)
-        w.host_factors[2, j] = rand(rng, eltype(w.host_factors))
+        id = state.walker_ids[i]
+        _normal_column!(streams.scale, id, view(move.host.normals, :, j))
+        w.host_factors[2, j] = _uniform_at(streams.acceptance, eltype(w.host_factors), id)
     end
-    copyto!(move.scratch, 1, move.host_scratch, 1, size(w.positions, 1) * n)
+    copyto!(move.scratch, 1, move.host.normals, 1, size(w.positions, 1) * n)
     copyto!(w.factors, 1, w.host_factors, 1, 2n)
     _launch_kernel(w, _propose_gaussian_kernel!, 64, n, w.candidates, w.positions, w.controls,
         w.logh, w.valid, state.accepted, state.candidate_logdensities,

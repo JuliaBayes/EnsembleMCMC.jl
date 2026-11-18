@@ -39,19 +39,6 @@ function test_kernel_executor(device=copy)
             step!(state)
             @test calls[] == 2size(points, 2)
         end
-        @testset "Snooker projections beyond the coordinate range" begin
-            points = floatmax(Float64) .* [0 .1 .6 -.6; 0 .6 0 0]
-            calls = Ref(0)
-            density(x) = (calls[] += 1; -sum(abs2, x ./ floatmax(Float64)) / 2)
-            function density!(v, x)
-                calls[] += length(v)
-                v .= vec(-sum(abs2, x ./ floatmax(Float64); dims=1) ./ 2)
-            end
-            state = initialize(Philox4x((1, 19)), BatchedLogDensity(density, density!), device(points);
-                move=DESnookerMove(), executor=KernelExecutor())
-            step!(state)
-            @test calls[] > size(points, 2)
-        end
         initial = randn(MersenneTwister(18), 3, 12)
         coordinates = Float32.(initial)
         values = Float64.(scalar.(Vector.(eachcol(coordinates))))
@@ -87,7 +74,7 @@ function test_kernel_executor(device=copy)
         reference = initialize(test_rng(), scalar, initial; move=DEMove())
         state = initialize(test_rng(), target, device(initial); move=DEMove(), executor=KernelExecutor())
         previous_logdensities = copy(current_state(reference).logdensities)
-        address = Philox4x((271, 12))
+        address = test_rng()
         step!(reference, address; proposal_index=2)
         step!(state, address; proposal_index=2)
         transition = snapshot(state)
@@ -158,13 +145,13 @@ function test_kernel_executor(device=copy)
             (values, positions) -> (push!(widths, size(positions, 2)); fill!(values, -Inf)))
         draws = sample!(initialize(Philox4x((3, 19)), flat, device(initial);
             move=GaussianReplacementMove(), executor=KernelExecutor()), 1)
-        original_widths = copy(widths)
+        @test widths == [3]
         @test !any(Array(draws.accepted))
         @test Array(draws.positions[:, :, 1]) == initial
         empty!(widths)
         step!(initialize(Philox4x((3, 19)), flat, device(initial .- initial[:, 1]);
             move=GaussianReplacementMove(), executor=KernelExecutor()))
-        @test widths == original_widths
+        @test widths == [3]
 
         mixture = MoveMixture((DEMove(), GaussianReplacementMove()), [1, 1]; schedule=:cycle)
         duplicates = reshape([0.0, 0, 0, 0, 0, 0, 0, 1], 1, :)

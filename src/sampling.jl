@@ -104,24 +104,17 @@ _minimum_walkers(moves::Tuple, weights, dimension) = maximum(
 )
 
 const _PROPOSALS_PER_PURPOSE = typemax(Int16) - 2
-const _COMPANION_PURPOSE = 5
-const _SCALE_PURPOSE = 6
 
-_stream_index(purpose, proposal) = (purpose - 1) * _PROPOSALS_PER_PURPOSE + proposal
-_walker_rngpart(part, purpose, proposal) = rngpart_subpartition(
-    part, _stream_index(purpose, proposal), Base.OneTo(typemax(Int32) - 2),
-)
-
-mutable struct EnsembleState{F,M,W,E,R,P,V,L,B,A,Q}
+mutable struct EnsembleState{F,M,W,E,R,P,V,L,B,A,Q,D}
     logdensity::F
     moves::M
     weights::W
     executor::E
     rng::R
-    cycle_partition::P
-    walker_rngs::Vector{R}
+    rng_type::Type{P}
     walker_ids::Vector{Int}
     walker_order::Vector{Int}
+    draw_buffers::D
     positions::V
     candidates::V
     logdensities::L
@@ -202,7 +195,7 @@ end
 _coordinate_type(::AbstractVector{<:AbstractVector{T}}) where {T} = T
 _coordinate_type(initial) = promote_type(map(eltype, initial)...)
 _allocate_move(move, positions) = move
-_prepare_group!(move, state, group, complement) = move
+_prepare_group!(move, state, group, complement, streams) = move
 _promoted_values(values::AbstractVector{T}) where {T} =
     isconcretetype(T) ? values : collect(promote(values...))
 
@@ -262,8 +255,6 @@ function validate_positions(positions::AbstractMatrix)
     return validate_positions(eachcol(positions))
 end
 
-const _SUPPORTED_RNGS = "Random123 Philox4x or Threefry4x with UInt64 counters, such as Philox4x((seed, chain))"
-
 """
     initialize(rng, logdensity, initial; move=StretchMove(), executor=SerialExecutor(),
                walker_ids=1:nwalkers, logdensities=nothing)
@@ -272,14 +263,13 @@ Create one ensemble from a vector of finite coordinate vectors or a matrix
 with axes (coordinate, walker). The coordinates must have full affine rank
 and initial log densities other than NaN or +Inf. Initial values of -Inf are
 allowed with a warning: stretch, DE and snooker walkers far outside the support
-may never recover. The state owns copies of coordinates and RNG.
+may never recover. The state copies the coordinates and retains a run key.
 
-Supported RNGs are Random123 `Philox4x` and `Threefry4x` with UInt64 counters.
-`initialize` copies the RNG and does not advance it, so two states made from the
-same RNG object give identical chains. For independent ensembles, use distinct
-keys, for example `Philox4x((seed, chain))` for `chain = 1, 2, ...`.
-Standalone [`step!`](@ref) needs four free partition levels, so an RNG derived
-through at most one partition level (depth 2 or less) is required.
+Pass a PureRNGs key such as `Philox4x64(42)`. The same key and initial points
+reproduce a run within a fixed environment. Its bit position does not enter
+the sweep address. Use `subrng(root, chain_id)` for independent ensembles.
+Random123 `Philox4x` and `Threefry4x` with UInt64 counters are also supported
+at partition depth 2 or less. Initialization leaves the supplied RNG untouched.
 
 Supply `logdensities` to reuse cached values without evaluating the target.
 The vector must match walker order and contain real values other than NaN or
@@ -294,7 +284,7 @@ candidate like -Inf, and +Inf throws a `DomainError`. Do not mutate state fields
 Use [`current_state`](@ref) for borrowed inspection and [`snapshot`](@ref) for copies.
 """
 function initialize(
-    rng::Union{Philox4x{UInt64},Threefry4x{UInt64}}, logdensity, initial::AbstractVector;
+    rng, logdensity, initial::AbstractVector;
     move = StretchMove(), executor::AbstractExecutor = SerialExecutor(),
     walker_ids = collect(eachindex(initial)),
     logdensities::Union{Nothing,AbstractVector} = nothing, kwargs...,
@@ -304,9 +294,7 @@ function initialize(
     executor isa KernelExecutor && throw(ArgumentError("KernelExecutor requires an initial matrix"))
     move isa Union{AbstractEnsembleMove,MoveMixture} || throw(ArgumentError(
         "move must be an ensemble move or a MoveMixture, not $(typeof(move))"))
-    depth = rngpart_depth(rng)
-    depth <= 2 || throw(ArgumentError(
-        "RNG partition depth $depth is too deep; standalone stepping needs depth 2 or less"))
+    root = _rng_root(rng, 2)
     validate_positions(initial)
     d = length(first(initial))
     T = float(_coordinate_type(initial))
@@ -332,19 +320,17 @@ function initialize(
     end
     logds = _promoted_values(values)
     _warn_negative_infinity(logds)
-    owned_rng = copy(rng)
-    cycle_part = RNGPartition(owned_rng, 0:(typemax(Int16) - 2))
     weights = move isa MoveMixture ? copy(move.weights) : nothing
     return EnsembleState(
-        logdensity, moves, weights, executor, owned_rng, cycle_part,
-        [rngpart_createrng(typeof(rng)) for _ in 1:n], ids, sortperm(ids),
+        logdensity, moves, weights, executor, root, typeof(rng), ids, sortperm(ids),
+        _draw_buffers(T, ids, d, moves),
         positions, deepcopy(positions), logds, copy(logds),
         _batch_workspace(logdensity, positions, logds, moves, weights), fill(false, n), zeros(T, n),
         zeros(Int, length(moves)), zeros(Int, length(moves)), 0, 0, true,
     )
 end
 
-function initialize(rng::Union{Philox4x{UInt64},Threefry4x{UInt64}}, logdensity,
+function initialize(rng, logdensity,
     initial::AbstractMatrix; executor=SerialExecutor(), kwargs...)
     Base.require_one_based_indexing(initial)
     executor isa KernelExecutor && return _initialize_kernel(rng, logdensity, initial; kwargs...)
@@ -352,8 +338,6 @@ function initialize(rng::Union{Philox4x{UInt64},Threefry4x{UInt64}}, logdensity,
 end
 
 function initialize(rng, logdensity, initial; kwargs...)
-    rng isa Union{Philox4x{UInt64},Threefry4x{UInt64}} ||
-        throw(ArgumentError("Unsupported RNG $(typeof(rng)); use $_SUPPORTED_RNGS"))
     throw(ArgumentError("Initial positions must be a vector of coordinate vectors or a coordinate-by-walker matrix"))
 end
 
@@ -386,10 +370,8 @@ Base.@inline function _accept_candidate!(state, i, log_hastings, logd, acceptanc
     T = eltype(state.positions[i])
     logratio = convert(T, (stored_logd - state.logdensities[i]) + log_hastings)
     probability = isnan(logratio) ? zero(T) : clamp(exp(logratio), zero(T), one(T))
-    rng = state.walker_rngs[i]
-    set_rng!(rng, acceptance_part, state.walker_ids[i])
     state.acceptance_probabilities[i] = probability
-    state.accepted[i] = rand(rng, T) < probability
+    state.accepted[i] = _uniform_at(acceptance_part, T, state.walker_ids[i]) < probability
     return nothing
 end
 
@@ -411,7 +393,7 @@ function _select_move(weights::Vector{Int}, rng, step)
     error("Invalid mixture cycle")
 end
 function _select_move(weights::AbstractVector{T}, rng, step) where {T<:AbstractFloat}
-    u = rand(rng, T) * sum(weights)
+    u = _uniform(rng, T) * sum(weights)
     total = zero(T)
     for i in eachindex(weights)
         total += weights[i]
@@ -420,35 +402,70 @@ function _select_move(weights::AbstractVector{T}, rng, step) where {T<:AbstractF
     return something(findlast(>(0), weights))
 end
 
-function _groups(rng, move, part, proposal_idx, order)
-    set_rng!(rng, part, _stream_index(4, proposal_idx))
-    permutation = randperm(rng, length(order))
+function _draw_buffers(::Type{T}, ids, d, moves) where {T}
+    n = length(ids)
+    dense = maximum(ids) == n && T <: _HardwareFloat
+    lanes = dense ? max(1, maximum(_companion_lanes, moves)) : 1
+    words = Vector{UInt64}(undef, Base.checked_mul(n, lanes))
+    floats = if dense
+        width = maximum(move -> _scale_width(move, d), moves)
+        (scale=Vector{T}(undef, Base.checked_mul(n, width)), acceptance=Vector{T}(undef, n))
+    end
+    return (; permutation=similar(ids), words, floats)
+end
+
+_draw_streams!(keys, words, ::Nothing, move) = (; keys..., words=nothing)
+function _draw_streams!(keys, words, floats, move)
+    n = length(floats.acceptance)
+    lanes = _companion_lanes(move)
+    if lanes > 0
+        PureRNGs.rand_next!(keys.companion, view(words, 1:(lanes * n)))
+    end
+    if move isa StretchMove
+        PureRNGs.rand_next!(keys.scale, view(floats.scale, 1:n))
+    elseif move isa DEMove
+        PureRNGs.randn_next!(keys.scale, view(floats.scale, 1:n))
+    elseif move isa _AllocatedGaussianMove
+        PureRNGs.randn_next!(keys.scale, floats.scale)
+    end
+    PureRNGs.rand_next!(keys.acceptance, floats.acceptance)
+    return (; companion=keys.companion, words, scale=floats.scale, acceptance=floats.acceptance)
+end
+
+function _groups(rng, move, order, buffers)
+    permutation = copyto!(buffers.permutation, order)
+    n = length(permutation)
+    words = buffers.words
+    PureRNGs.rand_next!(rng, view(words, 1:n))
+    for i in n:-1:2
+        j = _bounded_index(words[i], rng, i, i)
+        permutation[i], permutation[j] = permutation[j], permutation[i]
+    end
     ngroups = group_count(move)
     if ngroups == 2
         split = fld(length(order), 2)
-        left = order[view(permutation, 1:split)]
-        right = order[view(permutation, (split + 1):length(permutation))]
-        return rand(rng, Bool) ? (left, right) : (right, left)
+        left = view(permutation, 1:split)
+        right = view(permutation, (split + 1):n)
+        return isodd(words[1]) ? (left, right) : (right, left)
     end
     size, extra = divrem(length(order), ngroups)
     groups = Vector{Vector{Int}}(undef, ngroups)
     start = 1
     for i in eachindex(groups)
         stop = start + size - 1 + (i <= extra)
-        groups[i] = order[permutation[start:stop]]
+        groups[i] = permutation[start:stop]
         start = stop + 1
     end
-    shuffle!(rng, groups)
+    _shuffle!(subrng(rng, 0), groups)
     return groups
 end
 
 _complement(groups::Tuple, i) = i == 1 ? (groups[2],) : (groups[1],)
 _complement(groups::AbstractVector, i) = groups[eachindex(groups) .!= i]
 
-function _evaluate!(state, move, part, proposal_idx, i, complement, acceptance_part)
-    rng = state.walker_rngs[i]
+function _evaluate!(state, move, streams, i, complement)
     log_hastings = propose!(state.candidates[i], move, state.positions, i,
-        complement, rng, part, proposal_idx, state.walker_ids[i])
+        complement, streams, state.walker_ids[i])
     if isnothing(log_hastings)
         copyto!(state.candidates[i], state.positions[i])
         state.candidate_logdensities[i] = state.logdensities[i]
@@ -456,30 +473,26 @@ function _evaluate!(state, move, part, proposal_idx, i, complement, acceptance_p
         state.accepted[i] = false
         return nothing
     end
-    return _evaluate_candidate!(state.batch_workspace, state, i, log_hastings, acceptance_part)
+    return _evaluate_candidate!(state.batch_workspace, state, i, log_hastings, streams.acceptance)
 end
 
-function _evaluate_group!(::SerialExecutor, state, move, part, move_index, proposal_index,
-    group, complement, acceptance_part)
+function _evaluate_group!(::SerialExecutor, state, move, streams, group, complement)
     for i in group
-        _evaluate!(state, move, part, proposal_index, i, complement, acceptance_part)
+        _evaluate!(state, move, streams, i, complement)
     end
 end
-function _evaluate_chunk!(task, ntasks, state, move, part, idx, group, complement, acceptance_part)
+function _evaluate_chunk!(task, ntasks, state, move, streams, group, complement)
     n = length(group)
     for k in (fld((task - 1) * n, ntasks) + 1):fld(task * n, ntasks)
-        _evaluate!(state, move, part, idx, group[k], complement, acceptance_part)
+        _evaluate!(state, move, streams, group[k], complement)
     end
 end
 
-function _evaluate_group!(executor::ThreadedExecutor, state, move, part, move_index, proposal_index,
-    group, complement, acceptance_part)
+function _evaluate_group!(executor::ThreadedExecutor, state, move, streams, group, complement)
     ntasks = clamp(fld(length(group), executor.min_chunk), 1, Threads.nthreads(:default))
-    ntasks == 1 && return _evaluate_chunk!(1, 1, state, move, part,
-        proposal_index, group, complement, acceptance_part)
+    ntasks == 1 && return _evaluate_chunk!(1, 1, state, move, streams, group, complement)
     tasks = map(Base.OneTo(ntasks)) do task
-        Threads.@spawn _evaluate_chunk!(task, ntasks, state, move, part,
-            proposal_index, group, complement, acceptance_part)
+        Threads.@spawn _evaluate_chunk!(task, ntasks, state, move, streams, group, complement)
     end
     _wait_tasks(tasks)
     return nothing
@@ -557,69 +570,54 @@ the state. Initialize a fresh state after correcting the target instead of
 resuming a partially completed sweep. Argument and RNG-depth errors raised before
 the sweep starts leave the state valid.
 """
-step!(state::EnsembleState) = _step!(state, state.batch_workspace)
-_step!(state, workspace, args...) = _step!(state, args...)
-function _step!(state)
-    state.valid || throw(ArgumentError("Cannot resume a state after a failed sweep"))
-    state.step < typemax(Int32) - 2 || throw(ArgumentError("RNG step range exhausted"))
-    set_rng!(state.rng, state.cycle_partition, 0)
-    steps = RNGPartition(state.rng, 0:(typemax(Int32) - 2))
-    set_rng!(state.rng, steps, state.step)
-    part = RNGPartition(state.rng, Base.OneTo(6 * _PROPOSALS_PER_PURPOSE))
-    return _sweep!(state, part, nothing)
+function step!(state::EnsembleState)
+    sweep = subrng(state.rng, 0, state.step)
+    return _step!(state, state.batch_workspace, sweep, nothing)
 end
+_step!(state, workspace, sweep, proposal_index) = _sweep!(state, sweep, proposal_index)
 
 """
     step!(state, rng; proposal_index=1)
 
 Advance one sweep using an externally addressed RNG without changing `rng`.
-The RNG must match the initialization RNG type and leave two partition levels
-for purposes and walkers, so its partition depth must be 4 or less.
-`proposal_index` in `1:$(_PROPOSALS_PER_PURPOSE)` selects disjoint proposal streams.
+Supply the same RNG type used for initialization. A PureRNGs key identifies the
+sweep, regardless of its bit position. A Random123 address needs partition depth
+4 or less. `proposal_index` in `1:$(_PROPOSALS_PER_PURPOSE)` selects the proposal stream.
 Inner mixtures use purpose 2 for selection, leaving purpose 1 for an outer mixture.
 The supplied address replaces the standalone cycle/step address for this sweep only.
 The sweep still counts: `sweep_count` advances, so a later standalone
 `step!(state)` uses the next step address, and a cyclic mixture moves to its
 next phase.
 """
-function step!(state::EnsembleState, rng::AbstractRNG; proposal_index::Integer=1)
-    typeof(rng) === typeof(state.rng) || throw(ArgumentError("RNG type must match the ensemble state"))
+function step!(state::EnsembleState, rng::Union{AbstractRNG,AbstractPureRNG}; proposal_index::Integer=1)
+    typeof(rng) === state.rng_type || throw(ArgumentError("RNG type must match the ensemble state"))
     1 <= proposal_index <= _PROPOSALS_PER_PURPOSE ||
         throw(ArgumentError("Proposal index is outside the stream range"))
-    depth = rngpart_depth(rng)
-    depth <= 4 || throw(ArgumentError("RNG partition depth $depth is too deep; step!(state, rng) needs depth 4 or less"))
-    return _step!(state, state.batch_workspace, rng, proposal_index)
+    return _step!(state, state.batch_workspace, _rng_root(rng, 4), Int(proposal_index))
 end
 
-function _step!(state, rng::AbstractRNG, proposal_index::Integer)
-    part = RNGPartition(copy(rng), Base.OneTo(6 * _PROPOSALS_PER_PURPOSE))
-    return _sweep!(state, part, proposal_index)
-end
-
-function _sweep!(state, part, proposal_index)
+function _sweep!(state, sweep, proposal_index)
     state.valid || throw(ArgumentError("Cannot resume a state after a failed sweep"))
     state.step < typemax(Int32) - 2 || throw(ArgumentError("RNG step range exhausted"))
-    part.depth + 2 <= length(part.partctrsbase) ||
-        throw(ArgumentError("RNG partition is too deep for walker streams"))
-    # The owned RNG is re-keyed at the start of each standalone sweep, so it can serve as scratch.
-    scratch = state.rng
-    set_rng!(scratch, part, isnothing(proposal_index) ?
-        _stream_index(1, 1) : _stream_index(2, proposal_index))
-    idx = _select_move(state.weights, scratch, state.step + 1)
+    selection = isnothing(proposal_index) ? subrng(sweep, _MOVE_PURPOSE, 1) :
+        subrng(sweep, _INNER_MOVE_PURPOSE, proposal_index)
+    idx = _select_move(state.weights, selection, state.step + 1)
     stream_index = isnothing(proposal_index) ? idx : proposal_index
     move = state.moves[idx]
-    groups = _groups(scratch, move, part, stream_index, state.walker_order)
-    acceptance_part = _walker_rngpart(part, 3, stream_index)
+    groups = _groups(subrng(sweep, _GROUP_PURPOSE, stream_index), move, state.walker_order, state.draw_buffers)
+    keys = (companion=subrng(sweep, _COMPANION_PURPOSE, stream_index),
+        scale=subrng(sweep, _SCALE_PURPOSE, stream_index),
+        acceptance=subrng(sweep, _ACCEPTANCE_PURPOSE, stream_index))
+    streams = _draw_streams!(keys, state.draw_buffers.words, state.draw_buffers.floats, move)
     # Everything above leaves the ensemble untouched, so a failure there keeps the state valid.
     state.valid = false
 
     for active in eachindex(groups)
         group = groups[active]
         complement = _complement(groups, active)
-        fitted_move = _prepare_group!(move, state, group, complement)
-        _evaluate_group!(state.executor, state, fitted_move, part, idx, stream_index, group,
-            complement, acceptance_part)
-        _evaluate_batch!(state.batch_workspace, state, group, acceptance_part)
+        fitted_move = _prepare_group!(move, state, group, complement, streams)
+        _evaluate_group!(state.executor, state, fitted_move, streams, group, complement)
+        _evaluate_batch!(state.batch_workspace, state, group, streams.acceptance)
         _commit_group!(state, group, state.batch_workspace)
     end
     state.active_index = idx
@@ -680,7 +678,7 @@ function sample!(state::EnsembleState, nsamples::Integer; thin::Integer=1)
 end
 
 """
-    sample([rng::AbstractRNG], logdensity, initial, nsamples;
+    sample([rng], logdensity, initial, nsamples;
            warmup=0, thin=1, kwargs...)
 
 Sample one coupled ensemble in one call. Discard `warmup` complete sweeps,
@@ -689,18 +687,17 @@ history as [`sample!`](@ref), with axes (coordinate, walker, sample) for positio
 The first retained sweep is `warmup + thin`. Warmup discards samples; it does
 not adapt the sampler or check convergence.
 
-Any `AbstractRNG` is accepted. Two `UInt64` draws seed a private `Philox4x` RNG.
-The parent RNG advances, so repeated calls produce fresh ensembles. Equal parent
-seeds and inputs reproduce a run in the same environment. Omitted `rng` uses
-`Random.default_rng()`. This differs from [`initialize`](@ref), which copies a
-supported Random123 RNG without advancing it.
+A Julia `AbstractRNG` supplies two `UInt64` draws to seed a private `Philox4x64`.
+Omitting `rng` uses `Random.default_rng()`. A PureRNGs key supplies the run
+address directly. Reusing that key reproduces the run with the same inputs and
+environment. Use `subrng(root, run_id)` for independent runs.
 
 Pass `move`, `executor`, `walker_ids` and cached `logdensities` through `kwargs`
 to `initialize`. Use `initialize`, [`step!`](@ref) and `sample!` directly when
 continuation, cumulative diagnostics or custom storage is needed.
 """
 function sample(
-    rng::AbstractRNG,
+    rng::Union{AbstractRNG,AbstractPureRNG},
     logdensity,
     initial,
     nsamples::Integer;
@@ -711,8 +708,7 @@ function sample(
     _check_sample_count(nsamples, thin)
     0 <= warmup <= typemax(Int) - nsamples * thin ||
         throw(ArgumentError("Warmup must be nonnegative and the total sweep count must fit in Int"))
-    sampler_rng = Philox4x((rand(rng, UInt64), rand(rng, UInt64)))
-    state = initialize(sampler_rng, logdensity, initial; kwargs...)
+    state = initialize(_sample_root(rng), logdensity, initial; kwargs...)
     step!(state, warmup)
     return sample!(state, nsamples; thin)
 end

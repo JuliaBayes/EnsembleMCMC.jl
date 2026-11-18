@@ -5,7 +5,7 @@ error_of(f) = try f(); nothing; catch err; err; end
     saved_initial = deepcopy(initial)
     move = MoveMixture((StretchMove(), DEMove()), [2, 1]; schedule=:cycle)
     parent = Xoshiro(91)
-    sampler_rng = Philox4x((rand(parent, UInt64), rand(parent, UInt64)))
+    sampler_rng = Philox4x64((rand(parent, UInt64), rand(parent, UInt64)))
     state = initialize(sampler_rng, gaussian_logdensity, initial; move)
     step!(state, 7)
     expected = sample!(state, 9; thin=3)
@@ -21,6 +21,8 @@ error_of(f) = try f(); nothing; catch err; err; end
         logdensities=gaussian_logdensity.(initial),
     )
     @test actual == expected
+    _, advanced = rand_next(sampler_rng, UInt32)
+    @test EnsembleMCMC.sample(advanced, gaussian_logdensity, initial, 9; move, warmup=7, thin=3) == expected
     @test rand(rng, UInt64) == rand(parent, UInt64)
     @test initial == saved_initial
     @test EnsembleMCMC.sample(
@@ -98,26 +100,39 @@ end
         sample!(initialize(test_rng(), lp, initial; move=MoveMixture(moves, [0.5, 1.0])), 6)
 end
 
-@testset "RNG partition depth" begin
-    derive(rng) = AbstractRNG(EnsembleMCMC.RNGPartition(copy(rng), 1:3), 2)
+@testset "Random123 partition validation" begin
     lp, initial = gaussian_logdensity, initial_walkers()
-    depth2 = derive(test_rng())
+    address(ctr4, ctr3=0, ctr2=0) =
+        Random123.set_counter!(Philox4x((573, 19)), (0, ctr2, ctr3, ctr4))
+    depth2 = address(0x8000000280000000)
     state = initialize(depth2, lp, initial)
     @test step!(state, 2) === state
-    depth3 = derive(depth2)
+    depth3 = address(0x8000000280000002, 0x8000000000000000)
     err = error_of(() -> initialize(depth3, lp, initial))
     @test err isa ArgumentError && occursin("depth 3", err.msg)
-    depth4 = derive(depth3)
+    depth4 = address(0x8000000280000002, 0x8000000280000000)
     @test step!(state, depth4; proposal_index=2) === state
+
+    last_cycle_base = typemax(Int32) - typemax(Int16)
+    cycle_address(base) = address(0x8000000280000000 | UInt64(base))
+    @test current_state(step!(initialize(cycle_address(last_cycle_base), lp, initial))).sweep_count == 1
+    @test_throws ArgumentError initialize(cycle_address(last_cycle_base + 1), lp, initial)
+
+    last_purpose_base = typemax(Int32) - (1 + 6 * (typemax(Int16) - 2))
+    purpose_address(base) = address(0x8000000280000002, 0x8000000280000000 | UInt64(base))
+    @test step!(state, purpose_address(last_purpose_base)) === state
     saved = snapshot(state)
-    err = error_of(() -> step!(state, derive(depth4)))
+    depth5 = address(0x8000000280000002, 0x8000000280000002, 0x8000000000000000)
+    err = error_of(() -> step!(state, depth5))
     @test err isa ArgumentError && occursin("depth 5", err.msg)
+    @test_throws ArgumentError step!(state, purpose_address(last_purpose_base + 1))
+    @test_throws ArgumentError step!(state, address(0x8000000280000002, 0x8000000000000001))
     @test snapshot(state) == saved
     @test step!(state) === state
 end
 
 @testset "Addressed proposal index bounds" begin
-    state = initialize(test_rng(), gaussian_logdensity, initial_walkers())
+    state = initialize(Philox4x((573, 19)), gaussian_logdensity, initial_walkers())
     maximum_index = EnsembleMCMC._PROPOSALS_PER_PURPOSE
     for index in (0, -1, maximum_index + 1)
         @test_throws ArgumentError step!(state, Philox4x((1, 2)); proposal_index=index)

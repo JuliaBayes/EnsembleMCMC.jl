@@ -111,19 +111,28 @@ function prepare_move(move::DESnookerMove, ::Type{T}, ::Integer) where {T<:Real}
     return DESnookerMove(scale)
 end
 
-function _de_companion_indices(
-    rng::AbstractRNG,
-    companion_indices::AbstractVector{<:Integer},
-)
-    Base.require_one_based_indexing(companion_indices)
-    n_companions = length(companion_indices)
-    n_companions >= 2 || throw(ArgumentError(
-        "DEMove requires at least two walkers in each frozen complement",
-    ))
-    first_position = rand(rng, 1:n_companions)
-    second_position = rand(rng, 1:(n_companions - 1))
-    second_position >= first_position && (second_position += 1)
-    return companion_indices[first_position], companion_indices[second_position]
+_companion_lanes(::StretchMove) = 1
+_companion_lanes(::DEMove) = 2
+_companion_lanes(::DESnookerMove) = 4
+_scale_width(::Union{StretchMove,DEMove}, d) = 1
+_scale_width(::DESnookerMove, d) = 0
+
+function _proposal_parameters(move::StretchMove{T}, complement, streams, walker_id) where {T}
+    indices = only(complement)
+    companion = indices[_companion_index(streams, walker_id, 1, 1, length(indices))]
+    u = _uniform_at(streams.scale, T, walker_id)
+    b = (move.scale - one(move.scale)) * u + one(move.scale)
+    return companion, b * (b / move.scale)
+end
+
+function _proposal_parameters(move::DEMove{T}, complement, streams, walker_id) where {T}
+    indices = only(complement)
+    n = length(indices)
+    first = _companion_index(streams, walker_id, 2, 1, n)
+    second = _companion_index(streams, walker_id, 2, 2, n - 1)
+    a, b = indices[first], indices[second + (second >= first)]
+    noise = _normal_at(streams.scale, T, walker_id)
+    return a, b, move.gamma0 * (one(T) + move.sigma * noise)
 end
 
 @inline function _linear_candidate(origin, scale, a, b)
@@ -142,31 +151,9 @@ end
     end
 end
 
-function propose!(
-    candidate,
-    move::StretchMove,
-    current,
-    walker_idx::Integer,
-    complement_groups,
-    rng::AbstractRNG,
-    step_rngpart::RNGPartition,
-    proposal_idx::Integer,
-    walkerid::Integer,
-)
-    companion_indices = only(complement_groups)
-    companion_rngpart = _walker_rngpart(
-        step_rngpart, _COMPANION_PURPOSE, proposal_idx,
-    )
-    scale_rngpart = _walker_rngpart(step_rngpart, _SCALE_PURPOSE, proposal_idx)
-
-    set_rng!(rng, companion_rngpart, walkerid)
-    companion_idx = rand(rng, companion_indices)
-
-    set_rng!(rng, scale_rngpart, walkerid)
-    T = float(eltype(current[walker_idx]))
-    u = rand(rng, T)
-    b = (move.scale - one(move.scale)) * u + one(move.scale)
-    stretch = b * (b / move.scale)
+function propose!(candidate, move::StretchMove, current, walker_idx::Integer,
+    complement, streams, walker_id::Integer)
+    companion_idx, stretch = _proposal_parameters(move, complement, streams, walker_id)
     @. candidate = current[companion_idx] +
         stretch * (current[walker_idx] - current[companion_idx])
     if !all(isfinite, candidate)
@@ -176,29 +163,9 @@ function propose!(
     return (length(candidate) - 1) * log(stretch)
 end
 
-function propose!(
-    candidate,
-    move::DEMove,
-    current,
-    walker_idx::Integer,
-    complement_groups,
-    rng::AbstractRNG,
-    step_rngpart::RNGPartition,
-    proposal_idx::Integer,
-    walkerid::Integer,
-)
-    companion_indices = only(complement_groups)
-    companion_rngpart = _walker_rngpart(
-        step_rngpart, _COMPANION_PURPOSE, proposal_idx,
-    )
-    scale_rngpart = _walker_rngpart(step_rngpart, _SCALE_PURPOSE, proposal_idx)
-
-    set_rng!(rng, companion_rngpart, walkerid)
-    companion_a, companion_b = _de_companion_indices(rng, companion_indices)
-
-    set_rng!(rng, scale_rngpart, walkerid)
-    T = typeof(move.gamma0)
-    gamma = move.gamma0 * (one(T) + move.sigma * randn(rng, T))
+function propose!(candidate, move::DEMove, current, walker_idx::Integer,
+    complement, streams, walker_id::Integer)
+    companion_a, companion_b, gamma = _proposal_parameters(move, complement, streams, walker_id)
     @. candidate = current[walker_idx] +
         gamma * (current[companion_a] - current[companion_b])
     if !all(isfinite, candidate)
@@ -212,19 +179,12 @@ const _DE_SNOOKER_GROUP_ORDERS = (
     (1, 2, 3), (1, 3, 2), (2, 1, 3), (2, 3, 1), (3, 1, 2), (3, 2, 1),
 )
 
-function _de_snooker_companion_indices(rng::AbstractRNG, complement_groups)
-    length(complement_groups) == 3 || throw(ArgumentError(
-        "DESnookerMove requires exactly three frozen complement groups",
-    ))
-    all(!isempty, complement_groups) || throw(ArgumentError(
-        "DESnookerMove requires nonempty frozen complement groups",
-    ))
-    group_order = rand(rng, _DE_SNOOKER_GROUP_ORDERS)
-    return (
-        rand(rng, complement_groups[group_order[1]]),
-        rand(rng, complement_groups[group_order[2]]),
-        rand(rng, complement_groups[group_order[3]]),
-    )
+function _proposal_parameters(::DESnookerMove, groups, streams, walker_id)
+    order = _DE_SNOOKER_GROUP_ORDERS[_companion_index(streams, walker_id, 4, 1, 6)]
+    return ntuple(3) do j
+        group = groups[order[j]]
+        group[_companion_index(streams, walker_id, 4, j + 1, length(group))]
+    end
 end
 
 function _de_snooker_direction_norm(a, b)
@@ -237,23 +197,10 @@ end
     return ifelse(isfinite(difference), direction * difference, direction * a - direction * b)
 end
 
-function propose!(
-    candidate,
-    move::DESnookerMove,
-    current,
-    walker_idx::Integer,
-    complement_groups,
-    rng::AbstractRNG,
-    step_rngpart::RNGPartition,
-    proposal_idx::Integer,
-    walkerid::Integer,
-)
-    companion_rngpart = _walker_rngpart(
-        step_rngpart, _COMPANION_PURPOSE, proposal_idx,
-    )
-    set_rng!(rng, companion_rngpart, walkerid)
+function propose!(candidate, move::DESnookerMove, current, walker_idx::Integer,
+    complement, streams, walker_id::Integer)
     reference_idx, companion_a_idx, companion_b_idx =
-        _de_snooker_companion_indices(rng, complement_groups)
+        _proposal_parameters(move, complement, streams, walker_id)
 
     current_walker = current[walker_idx]
     reference = current[reference_idx]

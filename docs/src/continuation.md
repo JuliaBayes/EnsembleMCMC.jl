@@ -5,21 +5,22 @@ report progress, or store output in blocks.
 
 ## Keep the sampler state
 
-The lower-level interface uses a Random123 `Philox4x` or `Threefry4x` RNG with
-`UInt64` counters. Add Random123 before using this interface:
+Use a PureRNGs generator as the run key. Add PureRNGs before running this example.
 
 ```julia
 using Pkg
-Pkg.add("Random123")
+Pkg.add("PureRNGs")
 ```
 
 ```jldoctest continuation
-using EnsembleMCMC, Random, Random123
+using EnsembleMCMC, Random
 using EnsembleMCMC: initialize, step!, sample!, current_state, snapshot
+using PureRNGs: Philox4x64, subrng
 
-rng = Philox4x((42, 1));
-initial = randn(rng, 2, 24);
-state = initialize(rng, x -> -sum(abs2, x) / 2, initial);
+root = Philox4x64(42);
+run_key = subrng(root, 1);
+initial = randn(Xoshiro(19), 2, 24);
+state = initialize(run_key, x -> -sum(abs2, x) / 2, initial);
 
 step!(state, 100);              # discard warmup
 first_block = sample!(state, 200);
@@ -35,10 +36,11 @@ next_block = sample!(state, 50);
 `step!` advances the state without storing a history. `sample!` advances the same
 state and returns a new history. Neither restarts the ensemble.
 
-`initialize` copies the starting coordinates and RNG. Unlike `sample`, it does
-not advance the supplied RNG. Two calls with the same RNG and starting points
-therefore make identical runs. Use distinct keys for separate ensembles, such
-as `Philox4x((42, ensemble_id))`.
+`initialize` copies the starting coordinates and retains the run key. Reuse the
+same key and starting points to replay a run. For independent ensembles, use
+distinct keys from `subrng(root, ensemble_id)` and fresh starting points.
+For many independent runs or sweeps, a wide key such as the 128-bit
+`Philox4x64` key reduces the chance of a collision between derived streams.
 
 ## Store samples and report progress
 

@@ -1,9 +1,11 @@
 # GPU tests. `Pkg.test()` does not run them. Run from the repository root on a CUDA machine:
-#   julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.develop(path="."); Pkg.add(["CUDA", "Random123", "Test"]); include("test/cuda.jl")'
+#   julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.develop(path="."); Pkg.add(["CUDA", "MLDataDevices", "PureRNGs", "Random123", "Test"]); include("test/cuda.jl")'
 # The tests use the current device. Call `CUDA.device!(i)` before the include to choose another one.
 using CUDA, EnsembleMCMC, Random, Random123, Test
+using MLDataDevices: CUDADevice
+using PureRNGs: Philox4x64
 using EnsembleMCMC: initialize, step!, sample!, current_state, snapshot, synchronize!
-test_rng() = Philox4x((573, 19))
+test_rng() = CUDADevice()(Philox4x64(573))
 include("overflow.jl")
 include("kernel.jl")
 
@@ -32,7 +34,7 @@ function test_cuda()
         batch!(v, x) = (v .= vec(-sum(abs2, x; dims=1) / 2))
         target = BatchedLogDensity(scalar, batch!)
         state = initialize(test_rng(), target, CuArray(initial); move=DEMove(), executor=KernelExecutor())
-        expected = sample!(initialize(test_rng(), scalar, initial; move=DEMove()), 2)
+        expected = sample!(initialize(Philox4x64(573), scalar, initial; move=DEMove()), 2)
         draws = sample!(state, 2)
         @test Array(draws.positions) ≈ expected.positions
         @test Array(draws.accepted) == expected.accepted
