@@ -2,7 +2,9 @@ module EnsembleMCMC
 
 using LinearAlgebra
 using Random
-using Random123: Philox4x, Threefry4x
+import PureRNGs
+using PureRNGs: AbstractPureRNG, subrng
+using StaticArrays: SVector
 using PrecompileTools: @setup_workload, @compile_workload
 import KernelAbstractions as KA
 using KernelAbstractions: @index

@@ -1,148 +1,105 @@
 # SPDX-License-Identifier: Apache-2.0
 
-using Random123: random123_r
+const _MOVE_PURPOSE = UInt64(1)
+const _INNER_MOVE_PURPOSE = UInt64(2)
+const _ACCEPTANCE_PURPOSE = UInt64(3)
+const _GROUP_PURPOSE = UInt64(4)
+const _COMPANION_PURPOSE = UInt64(5)
+const _SCALE_PURPOSE = UInt64(6)
 
-struct RNGPartition{R<:AbstractRNG,S,C,I}
-    seed::S
-    partctrsbase::C
-    depth::Int
-    idxs::I
+# StatefulRNG exposes the same key on the CPU, where all proposal controls are drawn.
+_rng_root(rng::AbstractPureRNG, max_depth) = parent(PureRNGs.StatefulRNG(rng))
+_rng_root(rng, max_depth) = throw(ArgumentError(
+    "Unsupported RNG $(typeof(rng)); use a PureRNGs key such as Philox4x64(42)"))
+
+_sample_root(rng::AbstractPureRNG) = rng
+_sample_root(rng::AbstractRNG) = PureRNGs.Philox4x64((rand(rng, UInt64), rand(rng, UInt64)))
+
+const _HardwareFloat = Union{Float16,Float32,Float64}
+const _NORMAL_BLOCK_SIZE = 8
+_uniform(rng, ::Type{T}) where {T<:_HardwareFloat} = PureRNGs.rand_at(rng, T, 1)
+_uniform(rng, ::Type{T}) where {T} = rand(PureRNGs.StatefulRNG(rng), T)
+
+# Buffered draws use the walker's storage slot. Child keys use its logical ID.
+_uniform_at(values::AbstractVector, T, id) = values[id]
+_uniform_at(rng::AbstractPureRNG, ::Type{T}, id) where {T<:_HardwareFloat} = PureRNGs.rand_at(rng, T, id)
+_uniform_at(rng::AbstractPureRNG, ::Type{T}, id) where {T} = _uniform(subrng(rng, id), T)
+_normal_at(values::AbstractVector, ::Type{T}, id) where {T<:_HardwareFloat} = values[id]
+_normal_at(rng::AbstractPureRNG, ::Type{T}, id) where {T<:_HardwareFloat} = PureRNGs.randn_at(rng, T, id)
+_normal_at(rng::AbstractPureRNG, ::Type{T}, id) where {T} = randn(PureRNGs.StatefulRNG(subrng(rng, id)), T)
+
+function _normal_column!(values::AbstractVector, id, destination)
+    return copyto!(destination, 1, values, (id - 1) * length(destination) + 1, length(destination))
 end
-
-function RNGPartition(parent_rng::AbstractRNG, partidxs::AbstractUnitRange{<:Integer})
-    seed = rngpart_getseed(parent_rng)
-    partcounters, depth = rngpart_getpartctrs(parent_rng)
-
-    child_rngpart_partctrsbase = _rngpart_inc_partctrs(partcounters, depth, 1)
-
-    parent_mod_partcounters = _rngpart_inc_partctrs(child_rngpart_partctrsbase, depth, length(partidxs))
-    rngpart_setpartctrs!(parent_rng, parent_mod_partcounters, depth)
-
-    R = typeof(parent_rng)
-    S = typeof(seed)
-    C = typeof(child_rngpart_partctrsbase)
-    I = typeof(partidxs)
-    RNGPartition{R,S,C,I}(seed, child_rngpart_partctrsbase, depth, partidxs)
-end
-
-Base.eachindex(rngpart::RNGPartition) = rngpart.idxs
-Base.length(rngpart::RNGPartition) = length(eachindex(rngpart))
-Base.size(rngpart::RNGPartition) = (length(rngpart),)
-
-function set_rng!(rng::R, rngpart::RNGPartition{R}, i::Integer) where R <: AbstractRNG
-    idxs = eachindex(rngpart)
-    Base.checkindex(Bool, idxs, i) || throw(ArgumentError("Index $i not in partition indices $idxs of $rngpart"))
-
-    j = i - minimum(idxs)
-    mod_partcounters = _rngpart_inc_partctrs(rngpart.partctrsbase, rngpart.depth, j)
-    mod_depth = rngpart.depth + 1
-
-    _rngpart_setkey!(rng, rngpart.seed)
-    rngpart_setpartctrs!(rng, mod_partcounters, mod_depth)
-
-    rng
-end
-
-Random.AbstractRNG(rngpart::RNGPartition{R}, i::Integer) where R =
-    set_rng!(rngpart_createrng(R), rngpart, i)
-
-# Equals `RNGPartition(AbstractRNG(rngpart, i), partidxs)` without creating an RNG.
-function rngpart_subpartition(rngpart::RNGPartition{R,S,C}, i::Integer,
-    partidxs::AbstractUnitRange{<:Integer}) where {R,S,C}
-    idxs = eachindex(rngpart)
-    Base.checkindex(Bool, idxs, i) || throw(ArgumentError("Index $i not in partition indices $idxs of $rngpart"))
-    partctrs = _rngpart_inc_partctrs(rngpart.partctrsbase, rngpart.depth, i - minimum(idxs))
-    depth = rngpart.depth + 1
-    1 <= depth <= length(partctrs) || throw(ArgumentError("Partition depth out of allowed range"))
-    any(_rngpart_haspartctrtag, partctrs) && throw(ArgumentError("Partition counter(s) out of allowed range"))
-    base = _rngpart_inc_partctrs(partctrs, depth, 1)
-    return RNGPartition{R,S,C,typeof(partidxs)}(rngpart.seed, base, depth, partidxs)
-end
-
-rngpart_depth(rng::Union{Philox4x,Threefry4x}) = rngpart_getpartctrs(rng).depth
-
-rngpart_createrng(::Type{T}) where {T <: Philox4x} = T(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-
-rngpart_getseed(rng::Philox4x) = (rng.key1, rng.key2)
-
-# Match `seed!` without its output block, which `rngpart_setpartctrs!` recomputes.
-# Reset the buffer position for both types, so a draw depends only on the stream address.
-# Random123 `seed!` keeps the Threefry4x position.
-function _rngpart_setkey!(rng::Philox4x{T}, seed) where {T}
-    rng.key1, rng.key2 = seed[1] % T, seed[2] % T
-    rng.p = 0
-    return rng
-end
-
-function _rngpart_setkey!(rng::Threefry4x{T}, seed) where {T}
-    rng.key1, rng.key2, rng.key3, rng.key4 = seed[1] % T, seed[2] % T, seed[3] % T, seed[4] % T
-    rng.p = 0
-    return rng
-end
-
-rngpart_createrng(::Type{T}) where {T <: Threefry4x} = T(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-
-rngpart_getseed(rng::Threefry4x) = (rng.key1, rng.key2, rng.key3, rng.key4)
-
-function rngpart_getpartctrs(rng::Union{Philox4x,Threefry4x})
-    partctrinfo = _rngpart_split_uints(rng.ctr4, rng.ctr3, rng.ctr2)
-    depth = _rngpart_getdepth(partctrinfo)
-    partctrs = map(_rngpart_getpartctr, partctrinfo)
-    (partctrs = partctrs, depth = depth)
-end
-
-function rngpart_setpartctrs!(rng::Union{Philox4x,Threefry4x}, partctrs::NTuple{6,UInt32}, depth::Integer)
-    tagged_partctrs = _rngpart_settopbit(partctrs, depth)
-    merged_partctrs = _rngpart_merge_uints(tagged_partctrs...)::NTuple{3,UInt64}
-
-    rng.ctr4 = merged_partctrs[1]
-    rng.ctr3 = merged_partctrs[2]
-    rng.ctr2 = merged_partctrs[3]
-    rng.ctr1 = 0
-
-    random123_r(rng)
-
-    rng
-end
-
-@inline _rngpart_split_uints() = ()
-@inline _rngpart_split_uints(x::UInt64, xs::UInt64...) =
-    (UInt32(x >> 32), UInt32(x << 32 >> 32), _rngpart_split_uints(xs...)...)
-
-@inline _rngpart_merge_uints() = ()
-@inline _rngpart_merge_uints(x1::UInt32, x2::UInt32, xs::UInt32...) =
-    (UInt64(x1) << 32 | UInt64(x2), _rngpart_merge_uints(xs...)...)
-
-_rngpart_topbit_mask(::Type{T}) where {T <: Unsigned} = ((typemax(T) >> 1) + one(T))
-
-_rngpart_lowbits_mask(::Type{T}) where {T <: Unsigned} = typemax(T) >> 1
-
-_rngpart_haspartctrtag(x::T) where {T<:Unsigned} = (x & _rngpart_topbit_mask(T)) > 0
-
-_rngpart_getpartctr(x::T) where {T<:Unsigned} = (x & _rngpart_lowbits_mask(T))
-
-function _rngpart_getdepth(partctrinfo::Tuple{T,Vararg{T}}) where {T<:Unsigned}
-    cycle::Int = 1
-    for i in eachindex(partctrinfo)
-        x = partctrinfo[i]
-        if _rngpart_haspartctrtag(x)
-            cycle = i
-        else
-            x == 0 || throw(ArgumentError("Inconsistent partition counter information"))
-        end
+function _normal_column!(rng::AbstractPureRNG, id, destination::AbstractVector{T}) where {T<:_HardwareFloat}
+    d = UInt64(length(destination))
+    last = UInt64(id) * d
+    # Every supported engine can address the first 2^56 64-bit draws.
+    if last > UInt64(1) << 56
+        return first(PureRNGs.randn_next!(subrng(rng, id), destination))
     end
-    return cycle
+    offset = last - d
+    # A column can start or end inside a block when its width is uneven.
+    j = 1
+    while j <= length(destination)
+        block, within = divrem(offset + (j - 1), UInt64(_NORMAL_BLOCK_SIZE))
+        draws = PureRNGs.randn_at(rng, SVector{_NORMAL_BLOCK_SIZE,T}, block + 1)
+        count = min(_NORMAL_BLOCK_SIZE - Int(within), length(destination) - j + 1)
+        copyto!(destination, j, draws, Int(within) + 1, count)
+        j += count
+    end
+    return destination
+end
+_normal_column!(rng::AbstractPureRNG, id, destination) =
+    randn!(PureRNGs.StatefulRNG(subrng(rng, id)), destination)
+
+# Uniform on 1:n, including spans that do not divide a power of two.
+# DE needs an ordered pair to have the same probability as its reverse.
+@inline function _index_next(rng, n::Int)
+    mask = typemax(UInt64) >> leading_zeros(UInt64(n - 1))
+    while true
+        word, rng = PureRNGs.rand_next(rng, UInt64)
+        index = word & mask
+        index < n && return Int(index) + 1, rng
+    end
 end
 
-function _rngpart_inc_partctrs(partctrs::Tuple{T,Vararg{T}}, depth::Integer, x::Integer) where {T<:Unsigned}
-    1 <= depth <= length(partctrs) || throw(ArgumentError("Partition depth out of allowed range"))
-    m = ntuple(i -> i == depth ? T(x) : zero(T), Val(length(partctrs)))
-    partctrs .+ m
+function _shuffle!(rng, items)
+    for i in length(items):-1:2
+        j, rng = _index_next(rng, i)
+        items[i], items[j] = items[j], items[i]
+    end
+    return rng
 end
 
-function _rngpart_settopbit(partctrs::Tuple{T,Vararg{T}}, depth::Integer) where {T<:Unsigned}
-    1 <= depth <= length(partctrs) || throw(ArgumentError("Partition depth out of allowed range"))
-    any(_rngpart_haspartctrtag, partctrs) && throw(ArgumentError("Partition counter(s) out of allowed range"))
-    m = ntuple(i -> i <= depth ? _rngpart_topbit_mask(T) : zero(T), Val(length(partctrs)))
-    partctrs .| m
+# Multiply-high maps equally many words to each index after discarding the
+# short residual interval. A rejection retries on its own address's child.
+@inline function _bounded_index(word::UInt64, key, offset, n::Int, ids=nothing, lanes=1)
+    span = UInt64(n)
+    product = widemul(word, span)
+    low = product % UInt64
+    if low < span && low < rem(-span, span)
+        return _retry_index(key, offset, n, ids, lanes)
+    end
+    return Int(product >> 64) + 1
+end
+
+@noinline function _retry_index(key, offset, n, ids, lanes)
+    address = if isnothing(ids)
+        offset
+    else
+        # A sparse draw retries on its logical address even when its buffer slot changes.
+        slot, lane = divrem(offset - 1, UInt64(lanes))
+        UInt64(ids[slot + 1] - 1) * UInt64(lanes) + lane + 1
+    end
+    return first(_index_next(subrng(key, address), n))
+end
+
+_companion_word(::Nothing, key, address) = PureRNGs.rand_at(key, UInt64, address)
+_companion_word(words::AbstractVector, key, address) = words[address]
+
+@inline function _companion_index(streams, i, lanes, slot, n)
+    offset = (UInt64(i) - 1) * UInt64(lanes) + UInt64(slot)
+    word = _companion_word(streams.words, streams.companion, offset)
+    return _bounded_index(word, streams.companion, offset, n, streams.ids, lanes)
 end

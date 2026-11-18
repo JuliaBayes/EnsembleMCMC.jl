@@ -168,11 +168,13 @@ KA.@kernel function _compact_kernel!(indices, status, valid, n)
     end
 end
 
-KA.@kernel function _gather_kernel!(batchpositions, candidates, controls, indices, n)
+KA.@kernel function _gather_kernel!(batchpositions, values, candidates, controls, indices, n)
     coordinate, k = @index(Global, NTuple)
     j = @inbounds indices[k <= n ? k : 1]
     walker = @inbounds controls[1, j]
     @inbounds batchpositions[coordinate, k] = candidates[coordinate, walker]
+    # An unwritten value stays +Inf and fails the sweep.
+    isone(coordinate) && (values[k] = Inf)
 end
 
 KA.@kernel function _accept_commit_kernel!(

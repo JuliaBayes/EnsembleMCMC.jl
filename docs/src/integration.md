@@ -25,7 +25,7 @@ target.
 ## Synchronize external updates
 
 [`synchronize!`](@ref) copies replacement positions and matching log densities
-into a valid state. It preserves walker IDs, RNG state, mixture phase, sweep
+into a valid state. It preserves walker IDs, the run key, mixture phase, sweep
 count, and acceptance counts. It clears the previous transition record.
 
 The caller must preserve density consistency and affine rank. Call
@@ -59,24 +59,25 @@ column views. Walker IDs, move indices, and counters are on the host.
 
 ## Supply an external RNG address
 
-`step!(state, rng; proposal_index=1)` uses an external Random123 address without
-changing the supplied RNG. Its type must match the initialization RNG. Reserve
-two remaining partition levels for purposes and walkers.
+`step!(state, sweep_key; proposal_index=1)` uses a host-supplied PureRNGs key
+for one sweep. Derive a distinct key for each sweep with `subrng`. The key's
+generator type must match the initialization generator.
 
 Inner mixture selection uses purpose 2, leaving purpose 1 for an outer mixture.
 This address replaces the normal step address for that sweep. The sweep count
 and mixture phase still advance, so a later `step!(state)` uses the next normal
-address. See [`step!`](@ref) for the supported address range.
+address.
 
-For a standalone state, `initialize` needs four free partition levels. The
-one-call `sample` interface accepts any `AbstractRNG` and draws two `UInt64`
-values to seed its own Philox RNG.
+Existing adapters such as BAT can load Random123 to keep passing `Philox4x` or
+`Threefry4x` with `UInt64` counters to `initialize` and addressed `step!`. The
+extension derives keys from the partition address and leaves the supplied RNG
+untouched. The existing partition limits still apply. See [`step!`](@ref).
 
 ## Interface guarantees
 
 The public interface includes documented constructors, sampling methods, keywords,
 defaults, and result fields, including qualified functions that are not exported.
-Concrete state constructors and fields, scratch storage, RNG partition
+Concrete state constructors and fields, scratch storage, RNG addressing
 helpers, and undocumented extension hooks are internal.
 
 Seeded replay applies within a fixed software and hardware environment.

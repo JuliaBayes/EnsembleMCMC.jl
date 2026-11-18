@@ -2,6 +2,7 @@ using EnsembleMCMC
 using EnsembleMCMC: initialize, step!, sample!, current_state, snapshot, synchronize!,
     validate_positions, acceptance_rate
 using LinearAlgebra
+using PureRNGs
 using Random
 using Random123
 using Statistics
@@ -9,7 +10,7 @@ using Test
 
 gaussian_logdensity(x) = -sum(abs2, x) / 2
 initial_walkers() = [randn(Philox4x((731, i)), 2) for i in 1:24]
-test_rng() = Philox4x((573, 19))
+test_rng() = Philox4x64(573)
 
 # Integrated autocorrelation time with Sokal's adaptive window (c = 5).
 function autocorrelation_time(x::AbstractVector)
@@ -257,6 +258,7 @@ test_proposal_overflow()
 include("kernel.jl")
 
 include("integration.jl")
+include("rng.jl")
 include("api.jl")
 include("validation.jl")
 include("aqua.jl")

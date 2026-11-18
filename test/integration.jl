@@ -97,31 +97,56 @@ end
     @test snapshot(state) == saved
 end
 
-@testset "Addressed sweeps and mixture phase" begin
+@testset "Random123 addressed sweeps and mixture phase" begin
+    root = Philox4x((991, 19))
+    lp, initial = gaussian_logdensity, initial_walkers()
+    partition_word(hi, lo) = 0x8000000080000000 | (UInt64(hi) << 32) | UInt64(lo)
+    # BAT initializes the ensemble after the chain reserves its cycle range.
+    chain = Random123.set_counter!(copy(root), (0, 0, 0, partition_word(2, typemax(Int16))))
+    saved_chain = copy(chain)
+    # The adapter reconstructs the zero-based step before BAT reserves purpose streams.
+    bat_address(rng, chain_id, cycle, step; reserved=0) = Random123.set_counter!(copy(rng),
+        (0, 0, partition_word(step + 1, reserved), partition_word(chain_id, cycle + 1)))
     move = MoveMixture((StretchMove(), DEMove()), [1, 1]; schedule=:cycle)
-    serial = initialize(test_rng(), gaussian_logdensity, initial_walkers(); move)
-    threaded = initialize(test_rng(), gaussian_logdensity, initial_walkers(); move, executor=ThreadedExecutor())
+    serial = initialize(chain, lp, initial; move)
+    threaded = initialize(chain, lp, initial; move, executor=ThreadedExecutor())
+    @test chain == saved_chain
     indices = Int[]
     for outer_step in (1, 3, 5, 7)
-        rng = Philox4x((991, outer_step))
-        expected_rng = rand(copy(rng), UInt64, 4)
+        rng = bat_address(root, 2, 3, outer_step - 1)
+        advanced = copy(rng)
+        for _ in 1:6
+            rand(advanced, UInt64)
+        end
+        saved_rng, saved_advanced = copy(rng), copy(advanced)
         step!(serial, rng; proposal_index=2)
-        step!(threaded, rng; proposal_index=2)
-        @test rand(copy(rng), UInt64, 4) == expected_rng
+        step!(threaded, advanced; proposal_index=2)
+        @test rng == saved_rng && advanced == saved_advanced
         @test snapshot(serial) == snapshot(threaded)
         push!(indices, current_state(serial).move_index)
     end
     @test indices == [1, 2, 1, 2]
+    other_rounds = Philox4x((991, 19), 7)
+    other_family = Threefry4x((991, 19, 0, 0))
     saved = snapshot(serial)
-    @test_throws ArgumentError step!(serial, Threefry4x((1, 2, 3, 4)))
+    @test_throws ArgumentError step!(serial, bat_address(other_rounds, 2, 3, 0))
+    @test_throws ArgumentError step!(serial, bat_address(other_family, 2, 3, 0))
     @test snapshot(serial) == saved
 
-    serial = initialize(test_rng(), gaussian_logdensity, initial_walkers(); move=DEMove())
-    threaded = initialize(test_rng(), gaussian_logdensity, initial_walkers();
-        move=DEMove(), executor=ThreadedExecutor())
-    address = Philox4x((991, 11))
-    step!(serial, address; proposal_index=3)
-    @test snapshot(step!(threaded, address; proposal_index=3)) == snapshot(serial)
+    function candidates(rng, address, proposal_index)
+        state = initialize(rng, lp, initial; move=DEMove())
+        return current_state(step!(state, address; proposal_index)).candidates
+    end
+    address = bat_address(root, 2, 3, 0)
+    expected = candidates(chain, address, 2)
+    reserved = 1 + 3 * (typemax(Int16) - 2)
+    for different_address in (bat_address(root, 3, 3, 0), bat_address(root, 2, 4, 0),
+        bat_address(root, 2, 3, 1), bat_address(root, 2, 3, 0; reserved))
+        @test candidates(chain, different_address, 2) != expected
+    end
+    @test candidates(chain, address, 3) != expected
+    @test candidates(other_rounds, bat_address(other_rounds, 2, 3, 0), 2) != expected
+    @test candidates(other_family, bat_address(other_family, 2, 3, 0), 2) != expected
 end
 
 @testset "Nonfinite starts and degenerate transitions" begin

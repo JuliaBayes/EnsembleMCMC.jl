@@ -27,7 +27,7 @@ draws.positions[:, 1, 1]         # first walker's first retained position
 ```
 
 Each sweep updates every walker. Walkers interact and are not independent chains.
-Each call to `sample` advances the supplied RNG to seed a new ensemble.
+Each call draws two seed words from a Julia `AbstractRNG`. Pass a PureRNGs key to replay an ensemble.
 Choose warmup and run length for the target. Sampling does not test convergence.
 
 Use `initialize`, `step!`, and `sample!` to continue a run or store samples in blocks.

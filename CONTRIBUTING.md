@@ -54,7 +54,7 @@ executed lines, not statistical correctness. No coverage percentage target is se
 from the repository root:
 
 ```sh
-julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.develop(path="."); Pkg.add(["CUDA", "Random123", "Test"]); include("test/cuda.jl")'
+julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.develop(path="."); Pkg.add(["CUDA", "MLDataDevices", "PureRNGs", "Random123", "Test"]); include("test/cuda.jl")'
 ```
 
 The tests use the current device. Call `CUDA.device!(i)` before the include to

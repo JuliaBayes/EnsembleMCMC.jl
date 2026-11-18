@@ -69,21 +69,20 @@
         @test !any(draws.accepted)
         @test draws.positions[:, :, 1] == initial
 
-        # Translating constant points to zero must not change fit validity.
-        # Seeded partitions can differ between Julia versions.
+        # The seed puts the three constant points in one group.
         initial = [1.0 1 1 0 0 2; 0.1 0.1 0.1 0 1 0]
         calls[] = 0
         state = initialize(Philox4x((3, 19)), reject_proposals, initial;
             move=GaussianReplacementMove())
         draws = sample!(state, 1)
-        original_calls = calls[]
+        @test calls[] == 3size(initial, 2) ÷ 2
         @test !any(draws.accepted)
         @test draws.positions[:, :, 1] == initial
         initial = initial .- initial[:, 1]
         calls[] = 0
         step!(initialize(Philox4x((3, 19)), reject_proposals, initial;
             move=GaussianReplacementMove()))
-        @test calls[] == original_calls
+        @test calls[] == 3size(initial, 2) ÷ 2
     end
 
     @testset "Shrinkage options" begin
@@ -96,13 +95,25 @@
         @test EnsembleMCMC.minimum_walkers(GaussianReplacementMove(shrinkage=0.5), 1) == 4
     end
 
-    @testset "Small solve against LinearAlgebra, $T, d=$d" for T in (Float32, Float64),
+    function gaussian_distances(fit, scale, points)
+        group = axes(points, 2)
+        distances = similar(points, length(group))
+        work = similar(points, length(group), size(points, 1))
+        EnsembleMCMC._gaussian_distances!(work, eachcol(points), group, fit, scale) do i, distance
+            distances[i] = distance
+        end
+        return distances
+    end
+
+    @testset "Group distances against LinearAlgebra, $T, d=$d" for T in (Float32, Float64),
         d in (1, 5, 128, 129)
         rng = Philox4x((11, d))
         A = randn(rng, T, d, d)
         factor = Matrix(cholesky(Symmetric(A * A' + d * I)).L)
-        v = randn(rng, T, d)
-        @test EnsembleMCMC._gaussian_ldiv!(factor, copy(v)) ≈ LowerTriangular(factor) \ v rtol=1000eps(T)
+        points = randn(rng, T, d, 3)
+        fit = (; anchor=zeros(T, d), mean=zeros(T, d), factor)
+        reference = [sum(abs2, LowerTriangular(factor) \ v) / 2 for v in eachcol(points)]
+        @test gaussian_distances(fit, one(T), points) ≈ reference rtol=1000eps(T)
     end
 
     @testset "Fit against LinearAlgebra, $T, d=$d, shrinkage=$s" for T in (Float32, Float64),
@@ -154,7 +165,7 @@
             scale, valid = EnsembleMCMC._fit_gaussian!(fit.anchor, fit.mean, fit.factor,
                 copy(X), size(X, 2), :auto)
             @test valid
-            [EnsembleMCMC._gaussian_half_squared_distance!(zeros(3), p, fit, scale) for p in eachcol(points)]
+            gaussian_distances(fit, scale, points)
         end
         @test distances(matrix * X .+ shift, matrix * points .+ shift) ≈ distances(X, points) rtol=1e-8
     end
