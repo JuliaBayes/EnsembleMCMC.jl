@@ -41,9 +41,9 @@ function _evaluate_group!(::KernelExecutor, state, fitted::_FittedGaussianMove,
     end
 
     for (j, i) in enumerate(group)
-        id = state.walker_ids[i]
-        _normal_column!(streams.scale, id, view(move.host.normals, :, j))
-        w.host_factors[2, j] = _uniform_at(streams.acceptance, eltype(w.host_factors), id)
+        slot = state.draw_buffers.slots[i]
+        _normal_column!(streams.scale, slot, view(move.host.normals, :, j))
+        w.host_factors[2, j] = _uniform_at(streams.acceptance, eltype(w.host_factors), slot)
     end
     copyto!(move.scratch, 1, move.host.normals, 1, size(w.positions, 1) * n)
     copyto!(w.factors, 1, w.host_factors, 1, 2n)

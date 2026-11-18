@@ -9,6 +9,7 @@ LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 PrecompileTools = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
 PureRNGs = "2ccaadc3-3d9a-45d4-a2ec-95a2424790b7"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 
 [compat]
 Aqua = "0.8"
@@ -21,6 +22,7 @@ PureRNGs = "0.0.2"
 Random = "1"
 Random123 = "1.5"
 Reactant = "0.2.304"
+StaticArrays = "1"
 Statistics = "1"
 Test = "1"
 

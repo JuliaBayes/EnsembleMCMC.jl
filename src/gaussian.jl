@@ -158,7 +158,7 @@ end
 
 function _gaussian_proposals!(work, move, state, group, scale, streams)
     for (j, i) in enumerate(group)
-        _normal_column!(streams.scale, state.walker_ids[i], view(work, j, :))
+        _normal_column!(streams.scale, state.draw_buffers.slots[i], view(work, j, :))
     end
     _gaussian_multiply!(move.factor, work)
     for (j, i) in enumerate(group)

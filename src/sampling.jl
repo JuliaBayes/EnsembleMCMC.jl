@@ -371,7 +371,7 @@ Base.@inline function _accept_candidate!(state, i, log_hastings, logd, acceptanc
     logratio = convert(T, (stored_logd - state.logdensities[i]) + log_hastings)
     probability = isnan(logratio) ? zero(T) : clamp(exp(logratio), zero(T), one(T))
     state.acceptance_probabilities[i] = probability
-    state.accepted[i] = _uniform_at(acceptance_part, T, state.walker_ids[i]) < probability
+    state.accepted[i] = _uniform_at(acceptance_part, T, state.draw_buffers.slots[i]) < probability
     return nothing
 end
 
@@ -404,18 +404,23 @@ end
 
 function _draw_buffers(::Type{T}, ids, d, moves) where {T}
     n = length(ids)
-    dense = maximum(ids) == n && T <: _HardwareFloat
-    lanes = dense ? max(1, maximum(_companion_lanes, moves)) : 1
+    sparse_ids = T <: _HardwareFloat && maximum(ids) != n ? ids : nothing
+    # A sparse buffer uses one slot per stored walker. Its draw still uses the original ID.
+    slots = isnothing(sparse_ids) ? ids : eachindex(ids)
+    lanes = T <: _HardwareFloat ? max(1, maximum(_companion_lanes, moves)) : 1
     words = Vector{UInt64}(undef, Base.checked_mul(n, lanes))
-    floats = if dense
+    floats = if T <: _HardwareFloat
         width = maximum(move -> _scale_width(move, d), moves)
-        (scale=Vector{T}(undef, Base.checked_mul(n, width)), acceptance=Vector{T}(undef, n))
+        block = isnothing(sparse_ids) ? nothing : Val(min(width, _NORMAL_BLOCK_SIZE))
+        (scale=Vector{T}(undef, Base.checked_mul(n, width)), acceptance=Vector{T}(undef, n),
+            ids=sparse_ids, block=block)
     end
-    return (; permutation=similar(ids), words, floats)
+    return (; permutation=similar(ids), words, floats, slots)
 end
 
-_draw_streams!(keys, words, ::Nothing, move) = (; keys..., words=nothing)
+_draw_streams!(keys, words, ::Nothing, move) = (; keys..., words=nothing, ids=nothing)
 function _draw_streams!(keys, words, floats, move)
+    isnothing(floats.ids) || return _sparse_draw_streams!(keys, words, floats, move)
     n = length(floats.acceptance)
     lanes = _companion_lanes(move)
     if lanes > 0
@@ -429,7 +434,44 @@ function _draw_streams!(keys, words, floats, move)
         PureRNGs.randn_next!(keys.scale, floats.scale)
     end
     PureRNGs.rand_next!(keys.acceptance, floats.acceptance)
-    return (; companion=keys.companion, words, scale=floats.scale, acceptance=floats.acceptance)
+    return (; companion=keys.companion, words, scale=floats.scale, acceptance=floats.acceptance, ids=nothing)
+end
+
+function _sparse_draw_streams!(keys, words, floats, move)
+    ids = floats.ids
+    lanes = _companion_lanes(move)
+    lanes > 0 && _sparse_draws!(PureRNGs.rand_at, words, keys.companion, ids, Val(lanes))
+    if move isa StretchMove
+        _sparse_draws!(PureRNGs.rand_at, floats.scale, keys.scale, ids, Val(1))
+    elseif move isa DEMove
+        _sparse_draws!(PureRNGs.randn_at, floats.scale, keys.scale, ids, Val(1))
+    elseif move isa _AllocatedGaussianMove
+        d = length(move.mean)
+        if d <= _NORMAL_BLOCK_SIZE
+            _sparse_draws!(PureRNGs.randn_at, floats.scale, keys.scale, ids, floats.block)
+        else
+            for (i, id) in pairs(ids)
+                _normal_column!(keys.scale, id, view(floats.scale, ((i - 1) * d + 1):(i * d)))
+            end
+        end
+    end
+    _sparse_draws!(PureRNGs.rand_at, floats.acceptance, keys.acceptance, ids, Val(1))
+    return (; companion=keys.companion, words, scale=floats.scale, acceptance=floats.acceptance, ids)
+end
+
+function _sparse_draws!(draw, values::Vector{T}, key, ids, ::Val{N}) where {T,N}
+    for (i, id) in pairs(ids)
+        address = UInt32(id) # initialize checks the walker ID range.
+        if N == 1
+            values[i] = draw(key, T, address)
+        else
+            # Static vector k contains scalar draws (k - 1) * N + 1 through k * N.
+            draws = draw(key, SVector{N,T}, address)
+            for j in 1:N
+                values[(i - 1) * N + j] = draws[j]
+            end
+        end
+    end
 end
 
 function _groups(rng, move, order, buffers)
@@ -465,7 +507,7 @@ _complement(groups::AbstractVector, i) = groups[eachindex(groups) .!= i]
 
 function _evaluate!(state, move, streams, i, complement)
     log_hastings = propose!(state.candidates[i], move, state.positions, i,
-        complement, streams, state.walker_ids[i])
+        complement, streams, state.draw_buffers.slots[i])
     if isnothing(log_hastings)
         copyto!(state.candidates[i], state.positions[i])
         state.candidate_logdensities[i] = state.logdensities[i]

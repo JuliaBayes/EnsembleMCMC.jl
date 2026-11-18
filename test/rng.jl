@@ -32,6 +32,8 @@ end
     address = 19
     # At this address the retry stream's first three low-bit candidates are 6, 7, 1.
     # With six choices only the third succeeds and yields position 2.
+    sparse = (companion=key, words=zeros(UInt64, 2), ids=[10])
+    @test EnsembleMCMC._companion_index(sparse, 1, 2, 1, 6) == 2 # Logical address 19.
     span = big(2)^64
     for bin in 0:5
         first_word = cld(bin * span, 6)
@@ -46,6 +48,21 @@ end
     end
 end
 
+@testset "Sparse Gaussian blocks match scalar walker addresses" begin
+    key = Threefry2x32(83)
+    for d in (3, 8, 13)
+        initial = randn(Xoshiro(31), Float32, d, 2d + 2)
+        ids = 31 .* collect(axes(initial, 2))
+        ids[2] = typemax(Int32) - 2
+        state = initialize(key, gaussian_logdensity, initial; move=GaussianReplacementMove(), walker_ids=ids)
+        keys = (companion=subrng(key, 5), scale=subrng(key, 6), acceptance=subrng(key, 3))
+        buffers = state.draw_buffers
+        draws = EnsembleMCMC._draw_streams!(keys, buffers.words, buffers.floats, only(state.moves))
+        expected = [randn_at(keys.scale, Float32, UInt64(id - 1) * d + j) for j in 1:d, id in ids]
+        @test reshape(draws.scale, size(initial)) == expected
+    end
+end
+
 @testset "Addressed DE sweep with sparse walker IDs" begin
     initial = reshape(Float64[0, 2, 8, 32, 128, 512, 2048], 1, :)
     ids = [14, 3, 50, 19, typemax(Int32) - 2, 2, 38]
@@ -56,4 +73,19 @@ end
     # The addressed shuffle updates walkers [5, 2, 7, 1], then [3, 6, 4].
     # Every proposal adds one half of its ordered companion difference.
     @test only.(current_state(state).positions) == [-252, 254, -1262, 1049, 116, 1598, 2288]
+end
+
+@testset "BigFloat Gaussian proposals keep the walker's precision" begin
+    setprecision(BigFloat, 192) do
+        key = Philox2x32(83)
+        initial = reshape(BigFloat[-3, -1, 1, 3], 1, :)
+        state = initialize(key, gaussian_logdensity, initial; move=GaussianReplacementMove(shrinkage=0))
+        step!(state, key)
+        # Walkers 1 and 4 update first. Their complement {-1, 1} has mean 0 and variance 2.
+        for id in (1, 4)
+            rng = StatefulRNG(subrng(key, 6, 1, id))
+            expected = sqrt(BigFloat(2)) * randn(rng, BigFloat)
+            @test only(current_state(state).candidates[id]) ≈ expected rtol=8eps(BigFloat)
+        end
+    end
 end

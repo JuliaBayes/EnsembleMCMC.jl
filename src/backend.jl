@@ -119,10 +119,10 @@ function _evaluate_group!(::KernelExecutor, state, move, streams, group, complem
     w = state.batch_workspace
     n, d = length(group), size(w.positions, 1)
     for (j, i) in enumerate(group)
-        id = state.walker_ids[i]
+        slot = state.draw_buffers.slots[i]
         w.host_controls[1, j] = i
-        _stage_proposal!(w.host_controls, w.host_factors, j, move, complement, streams, id)
-        w.host_factors[2, j] = _uniform_at(streams.acceptance, eltype(w.host_factors), id)
+        _stage_proposal!(w.host_controls, w.host_factors, j, move, complement, streams, slot)
+        w.host_factors[2, j] = _uniform_at(streams.acceptance, eltype(w.host_factors), slot)
     end
     copyto!(w.controls, 1, w.host_controls, 1, 4n)
     copyto!(w.factors, 1, w.host_factors, 1, 2n)

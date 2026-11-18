@@ -4,6 +4,7 @@ using LinearAlgebra
 using Random
 import PureRNGs
 using PureRNGs: AbstractPureRNG, subrng
+using StaticArrays: SVector
 using PrecompileTools: @setup_workload, @compile_workload
 import KernelAbstractions as KA
 using KernelAbstractions: @index

@@ -16,10 +16,11 @@ _sample_root(rng::AbstractPureRNG) = rng
 _sample_root(rng::AbstractRNG) = PureRNGs.Philox4x64((rand(rng, UInt64), rand(rng, UInt64)))
 
 const _HardwareFloat = Union{Float16,Float32,Float64}
+const _NORMAL_BLOCK_SIZE = 8
 _uniform(rng, ::Type{T}) where {T<:_HardwareFloat} = PureRNGs.rand_at(rng, T, 1)
 _uniform(rng, ::Type{T}) where {T} = rand(PureRNGs.StatefulRNG(rng), T)
 
-# Dense IDs read a bulk fill. Sparse IDs address the same sequence directly.
+# Buffered draws use the walker's storage slot. Child keys use its logical ID.
 _uniform_at(values::AbstractVector, T, id) = values[id]
 _uniform_at(rng::AbstractPureRNG, ::Type{T}, id) where {T<:_HardwareFloat} = PureRNGs.rand_at(rng, T, id)
 _uniform_at(rng::AbstractPureRNG, ::Type{T}, id) where {T} = _uniform(subrng(rng, id), T)
@@ -37,8 +38,15 @@ function _normal_column!(rng::AbstractPureRNG, id, destination::AbstractVector{T
     if last > UInt64(1) << 56
         return first(PureRNGs.randn_next!(subrng(rng, id), destination))
     end
-    for j in eachindex(destination)
-        destination[j] = PureRNGs.randn_at(rng, T, last - d + j)
+    offset = last - d
+    # A column can start or end inside a block when its width is uneven.
+    j = 1
+    while j <= length(destination)
+        block, within = divrem(offset + (j - 1), UInt64(_NORMAL_BLOCK_SIZE))
+        draws = PureRNGs.randn_at(rng, SVector{_NORMAL_BLOCK_SIZE,T}, block + 1)
+        count = min(_NORMAL_BLOCK_SIZE - Int(within), length(destination) - j + 1)
+        copyto!(destination, j, draws, Int(within) + 1, count)
+        j += count
     end
     return destination
 end
@@ -66,21 +74,32 @@ end
 
 # Multiply-high maps equally many words to each index after discarding the
 # short residual interval. A rejection retries on its own address's child.
-@inline function _bounded_index(word::UInt64, key, address, n::Int)
+@inline function _bounded_index(word::UInt64, key, offset, n::Int, ids=nothing, lanes=1)
     span = UInt64(n)
     product = widemul(word, span)
     low = product % UInt64
     if low < span && low < rem(-span, span)
-        return first(_index_next(subrng(key, address), n))
+        return _retry_index(key, offset, n, ids, lanes)
     end
     return Int(product >> 64) + 1
+end
+
+@noinline function _retry_index(key, offset, n, ids, lanes)
+    address = if isnothing(ids)
+        offset
+    else
+        # A sparse draw retries on its logical address even when its buffer slot changes.
+        slot, lane = divrem(offset - 1, UInt64(lanes))
+        UInt64(ids[slot + 1] - 1) * UInt64(lanes) + lane + 1
+    end
+    return first(_index_next(subrng(key, address), n))
 end
 
 _companion_word(::Nothing, key, address) = PureRNGs.rand_at(key, UInt64, address)
 _companion_word(words::AbstractVector, key, address) = words[address]
 
-@inline function _companion_index(streams, id, lanes, slot, n)
-    address = (UInt64(id) - UInt64(1)) * UInt64(lanes) + UInt64(slot)
-    word = _companion_word(streams.words, streams.companion, address)
-    return _bounded_index(word, streams.companion, address, n)
+@inline function _companion_index(streams, i, lanes, slot, n)
+    offset = (UInt64(i) - 1) * UInt64(lanes) + UInt64(slot)
+    word = _companion_word(streams.words, streams.companion, offset)
+    return _bounded_index(word, streams.companion, offset, n, streams.ids, lanes)
 end
