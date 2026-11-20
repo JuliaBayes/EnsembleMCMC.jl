@@ -27,6 +27,9 @@ Add a scaled difference of two distinct companions in the frozen complement.
 The scale is `gamma0 * (1 + sigma * randn())`, with default
 `gamma0 = 2.38 / sqrt(2d)` for dimension `d`. `gamma0` must be finite and
 positive when supplied. `sigma` must be finite and nonnegative.
+For Float16 positions, a positive jitter is applied in Float64 before each
+candidate coordinate is rounded to Float16. Perturbations below the final
+coordinate resolution may round away.
 Uses two groups and requires at least `max(2d, 4)` walkers.
 """
 struct DEMove{G<:Union{Nothing,Real},S<:Real} <: AbstractEnsembleMove
@@ -92,12 +95,13 @@ function prepare_move(move::DEMove, ::Type{T}, dimension::Integer) where {T<:Rea
     else
         convert(F, move.gamma0)
     end
-    sigma = convert(F, move.sigma)
+    S = F === Float16 && !iszero(move.sigma) ? Float64 : F
+    sigma = convert(S, move.sigma)
     isfinite(gamma0) && gamma0 > zero(gamma0) || throw(ArgumentError(
         "DEMove gamma0 must remain finite and positive after conversion to $(F)",
     ))
     isfinite(sigma) && sigma >= zero(sigma) || throw(ArgumentError(
-        "DEMove sigma must remain finite and nonnegative after conversion to $(F)",
+        "DEMove sigma must remain finite and nonnegative after conversion to $(S)",
     ))
     return DEMove(gamma0, sigma)
 end
@@ -136,7 +140,7 @@ function _proposal_parameters(move::DEMove{T}, complement, streams, walker_id) w
 end
 
 @inline function _linear_candidate(origin, scale, a, b)
-    difference = a - b
+    difference = convert(typeof(scale), a) - b
     candidate = origin + scale * difference
     if isfinite(candidate) || !isfinite(scale)
         return candidate
@@ -167,8 +171,9 @@ end
 function propose!(candidate, move::DEMove, current, walker_idx::Integer,
     complement, streams, walker_id::Integer)
     companion_a, companion_b, gamma = _proposal_parameters(move, complement, streams, walker_id)
+    F = typeof(gamma)
     @. candidate = current[walker_idx] +
-        gamma * (current[companion_a] - current[companion_b])
+        gamma * (convert(F, current[companion_a]) - current[companion_b])
     if !all(isfinite, candidate)
         @. candidate = _linear_candidate(current[walker_idx], gamma,
             current[companion_a], current[companion_b])

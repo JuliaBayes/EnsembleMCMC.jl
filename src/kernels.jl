@@ -80,10 +80,13 @@ KA.@kernel function _draw_linear_batch_kernel!(candidates, positions, batchposit
         k, length(group), axes(positions, 1))
 end
 
+_linear_scale_type(::StretchMove{T}) where {T} = T
+_linear_scale_type(::DEMove{G,S}) where {G,S} = promote_type(G, S)
+
 # A workgroup shares one draw while its lanes traverse contiguous coordinates.
 KA.@kernel function _draw_wide_linear_batch_kernel!(candidates, positions, batchpositions, values,
     controls, uniforms, logh, indices, accepted, permutation, walker_ids, group, complement, move, keys)
-    draw = @localmem Tuple{Int,Int,Int,Int,eltype(positions)} (1,)
+    draw = @localmem Tuple{Int,Int,Int,Int,_linear_scale_type(move)} (1,)
     if isone(@index(Local, Linear))
         k = @index(Group, Linear)
         draw[1] = _draw_linear_walker!(values, controls, uniforms, logh, indices, accepted,

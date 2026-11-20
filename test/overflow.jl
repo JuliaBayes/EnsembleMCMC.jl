@@ -1,4 +1,4 @@
-using PureRNGs: rand_at
+using PureRNGs: rand_at, randn_at
 
 
 function test_proposal_overflow(device=identity; executor=SerialExecutor())
@@ -33,6 +33,25 @@ function test_proposal_overflow(device=identity; executor=SerialExecutor())
         @test ratio < 0 && isinf(shelf(y) - shelf(x))
         @test Array(saved.acceptance_probabilities)[4] == exp(ratio)
         @test !Array(saved.accepted)[4]
+    end
+
+    @testset "Float16 DE jitter survives representable cancellation" begin
+        key = Philox4x64(1)
+        target = BatchedLogDensity(x -> 0.0, (v, x) -> fill!(v, 0.0))
+        # Walker 1 starts at -1 and its first-group companion difference is 1.
+        noise = randn_at(subrng(key, 0, 0, 6, 1), Float16, 1)
+        for (unit, sigma) in ((1, 0.0), (1, 1e-5), (1024, 1e-9), (1024, 1e-15))
+            initial = unit .* Float16[-1 0 1 2]
+            state = initialize(key, target, device(initial); move=DEMove(; gamma0=1, sigma), executor)
+            # The unperturbed terms cancel exactly; round just the remaining displacement.
+            expected = Float16(unit * sigma * Float64(noise))
+            @test only(Array(current_state(step!(state)).candidates[1])) == expected
+            @test iszero(expected) == (sigma == 0 || sigma == 1e-15)
+        end
+        # Wide device columns share one scale across all coordinates.
+        wide = Float16.(round.(first(randn_next(Philox4x64(83), Float32, 32, 64))))
+        state = initialize(key, target, device(wide); move=DEMove(gamma0=1), executor)
+        @test any(x -> any(!isinteger, Array(x)), current_state(step!(state)).candidates)
     end
 
     @testset "Gaussian half-quadratic overflow" begin
