@@ -2,13 +2,21 @@
 
 ## Unreleased
 
-- Support single-device Reactant PJRT arrays with `KernelExecutor` and fixed-width density callbacks through `BatchedLogDensity(...; batch_size)`.
+### Sampling
+
 - Add `sample(rng, logdensity, initial, nsamples; warmup=0, thin=1)` for one-call inference.
 - Require a PureRNGs key for `sample`, `initialize`, and addressed `step!`. Migrating a Julia `AbstractRNG` or Random123 seed changes its trajectory.
-- Generate move selection, walker shuffles, proposals and acceptance draws on the GPU for CUDA and Reactant.
-- Batch proposal and acceptance draws by walker ID. Compact buffers speed up sweeps with sparse IDs and preserve each walker's random stream when walkers are reordered.
 - Compute Gaussian replacement proposals by group on the CPU.
 - Expose `minimum_walkers(move, dimension)` for move-aware initialization. Zero-weight mixture components no longer increase the required walker count.
+
+### Execution
+
+- Support single-device Reactant PJRT arrays with `KernelExecutor` and fixed-width density callbacks through `BatchedLogDensity(...; batch_size)`.
+- Generate move selection, walker shuffles, proposals and acceptance draws on the GPU for CUDA and Reactant.
+- Batch proposal and acceptance draws by walker ID. Compact buffers speed up sweeps with sparse IDs and preserve each walker's random stream when walkers are reordered.
+
+### API and documentation
+
 - Define the public API and the scope of seeded replay guarantees.
 - Add an inference tutorial and practical guides, match Wren's documentation styling, and retain documentation for each release.
 
