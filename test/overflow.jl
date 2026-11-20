@@ -96,6 +96,25 @@ function test_proposal_overflow(device=identity; executor=SerialExecutor())
         end
     end
 
+    @testset "Gaussian updates with a large coordinate shift" begin
+        a, b = 0.6, 0.9
+        # The frozen pair gives variance 3(b-a)^2/4 in normalized coordinates.
+        function run(scale)
+            initial = [a b a -0.8] .* scale
+            μ, variance = (a + b) / 2, 0.75 * (b - a)^2
+            scalar(x) = -abs2(only(x) / scale - μ) / (2variance)
+            batch!(v, x) = (v .= -abs2.(vec(x) ./ scale .- μ) ./ (2variance))
+            state = initialize(Philox4x64(3), BatchedLogDensity(scalar, batch!), device(initial);
+                move=GaussianReplacementMove(), executor)
+            step!(state)
+            saved = snapshot(state)
+            return only(Array(saved.candidates[4])) / scale, Array(saved.acceptance_probabilities)[4]
+        end
+        y, p = run(floatmax(Float64))
+        @test y ≈ first(run(1.0))
+        @test p ≈ 1
+    end
+
     @testset "Linear proposals across the coordinate range" begin
         # These seeds put walker i in the first group with difference a - b.
         for (initial, move, seed, i, a, b) in (

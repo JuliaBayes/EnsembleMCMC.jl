@@ -231,6 +231,13 @@ function _gaussian_solve!(factor, work)
     return work
 end
 
+@inline function _gaussian_residual(x, anchor, scale)
+    difference = x - anchor
+    return isfinite(difference) ? difference / scale : x / scale - anchor / scale
+end
+
+_gaussian_distance(residual, ::Type{H}) where {H} = sum(x -> abs2(H(x) / 2), residual)
+
 function _gaussian_distances!(store!, work, positions, group, move, scale, H=eltype(work))
     for (j, i) in enumerate(group)
         residual = view(work, j, :)
@@ -239,7 +246,16 @@ function _gaussian_distances!(store!, work, positions, group, move, scale, H=elt
     end
     _gaussian_solve!(move.factor, work)
     for (j, i) in enumerate(group)
-        store!(i, sum(x -> abs2(H(x) / 2), view(work, j, :)))
+        residual = view(work, j, :)
+        distance = _gaussian_distance(residual, H)
+        if !isfinite(distance)
+            # Subtracting finite coordinates can overflow before division by the scale.
+            position = positions[i]
+            @. residual = _gaussian_residual(position, move.anchor, scale) - move.mean
+            _gaussian_solve!(move.factor, view(work, j:j, :))
+            distance = _gaussian_distance(residual, H)
+        end
+        store!(i, distance)
     end
     return nothing
 end

@@ -125,7 +125,7 @@ KA.@kernel function _propose_gaussian_kernel!(
     candidate_distance = zero(eltype(logh))
     if proposal_valid
         for row in 1:dimension
-            residual = @inbounds (positions[row, walker] - anchor[row]) / scale - mean[row]
+            residual = @inbounds _gaussian_residual(positions[row, walker], anchor[row], scale) - mean[row]
             for column in 1:(row - 1)
                 residual -= @inbounds factor[row, column] * scratch[column, j]
             end
@@ -135,7 +135,7 @@ KA.@kernel function _propose_gaussian_kernel!(
             current_distance += abs2(wide / 2)
         end
         for row in 1:dimension
-            residual = @inbounds (candidates[row, walker] - anchor[row]) / scale - mean[row]
+            residual = @inbounds _gaussian_residual(candidates[row, walker], anchor[row], scale) - mean[row]
             for column in 1:(row - 1)
                 residual -= @inbounds factor[row, column] * scratch[column, j]
             end
