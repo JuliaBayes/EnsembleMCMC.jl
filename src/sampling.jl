@@ -361,9 +361,11 @@ function _prepare_ensemble(logdensity, initial; move=StretchMove(),
         (prepare_move(move, T, d),)
     length(moves) <= _PROPOSALS_PER_PURPOSE || throw(ArgumentError("Too many mixture components"))
     n = length(positions)
-    required = _minimum_walkers(moves, move isa MoveMixture ? move.weights : nothing, d)
+    weights = move isa MoveMixture ? copy(move.weights) : nothing
+    required = _minimum_walkers(moves, weights, d)
     n >= required || throw(ArgumentError(
         "Too few walkers: $n given, the selected moves need $required in $d dimensions"))
+    _check_snooker_start(moves, weights, positions, T)
     length(walker_ids) == n && all(id -> id isa Integer && 1 <= id <= typemax(Int32) - 2, walker_ids) &&
         allunique(walker_ids) ||
         throw(ArgumentError("Walker IDs must be $n distinct integers in 1:$(typemax(Int32) - 2)"))
@@ -380,7 +382,6 @@ function _prepare_ensemble(logdensity, initial; move=StretchMove(),
     end
     logds = _promoted_values(values)
     _warn_negative_infinity(logds)
-    weights = move isa MoveMixture ? copy(move.weights) : nothing
     return (; positions, logdensities=logds, moves, weights, walker_ids=ids, walker_order=sortperm(ids))
 end
 
@@ -881,6 +882,7 @@ of borrowed walkers, gives undefined results. Accept a
 coordinate-by-walker matrix or a vector of coordinate vectors. Walker identities,
 RNG, sweep count, mixture phase, and cumulative counters stay unchanged.
 Clear the last-transition metadata. No target calls or affine-rank check run here.
+Four-walker pure snooker runs require a nonzero projection after conversion.
 The caller must preserve density consistency and affine rank. Use
 [`validate_positions`](@ref) after replacing positions through initialization retries.
 """
@@ -906,6 +908,7 @@ function _synchronize!(state, positions, logdensities, ::Type{T}, ::Type{L}) whe
         throw(ArgumentError("Positions must have matching dimensions and finite coordinates"))
     _kernel_all(v -> !isnan(v) & (v != Inf), L, logdensities) ||
         throw(ArgumentError("Log densities must not contain NaN or +Inf"))
+    _check_snooker_start(state.moves, state.weights, positions, T)
     for i in eachindex(positions)
         _kernel_copyto!(state.positions[i], positions[i])
         _kernel_copyto!(state.candidates[i], positions[i])

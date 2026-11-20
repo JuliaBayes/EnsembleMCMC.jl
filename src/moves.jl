@@ -56,6 +56,8 @@ Project a companion difference onto the line from a reference walker to the
 active walker, then multiply that displacement by `scale`. The scale must be
 finite and positive. Degenerate reference directions produce a rejection.
 Uses four groups and requires at least `max(2d, 4)` walkers for dimension `d`.
+With four walkers and only snooker moves, at least one pair of opposite
+edges must have a nonzero dot product to allow a displacement.
 This move is not generally affine-equivariant.
 """
 struct DESnookerMove{S<:Real} <: AbstractEnsembleMove
@@ -70,6 +72,23 @@ struct DESnookerMove{S<:Real} <: AbstractEnsembleMove
 end
 
 DESnookerMove(; scale::Real = 1.7) = DESnookerMove(scale)
+
+function _check_snooker_start(moves, weights, positions, ::Type{T}) where {T}
+    length(positions) == 4 || return nothing
+    all(moves[i] isa DESnookerMove for i in eachindex(moves)
+        if isnothing(weights) || weights[i] > 0) || return nothing
+    # Four walkers give three disjoint edge pairs. Exact dot products distinguish
+    # a zero projection from a small displacement on a nearly perpendicular pair.
+    a, b, c, d = map(positions) do point
+        values = Base.has_offset_axes(point) ? collect(point) : Array(point)
+        map(x -> Rational{BigInt}(convert(T, x)), values)
+    end
+    if iszero(dot(a - b, c - d)) && iszero(dot(a - c, b - d)) && iszero(dot(a - d, b - c))
+        throw(ArgumentError("The four walkers give only zero snooker projections. " *
+            "Change the starting points or give another move positive weight."))
+    end
+    return nothing
+end
 
 group_count(::StretchMove) = 2
 group_count(::DEMove) = 2

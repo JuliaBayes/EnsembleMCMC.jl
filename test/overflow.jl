@@ -163,6 +163,36 @@ function test_proposal_overflow(device=identity; executor=SerialExecutor())
         end
     end
 
+    @testset "Four-walker snooker starting geometry" begin
+        key = Philox4x64(725)
+        trapped = [0.0 3 1 1; 0 0 1 2]
+        target = BatchedLogDensity(x -> 0.0, (v, x) -> fill!(v, 0.0))
+        moves = (DESnookerMove(), StretchMove())
+        for move in (first(moves), MoveMixture(moves, (1, 0)))
+            @test_throws ArgumentError initialize(key, target, device(trapped); move, executor)
+        end
+        near = copy(trapped)
+        near[1, 4] = nextfloat(near[1, 4])
+        @test initialize(key, target, device(near); move=first(moves), executor) isa EnsembleMCMC.EnsembleState
+        mobile = copy(trapped)
+        mobile[1, 4] = 2
+        for (initial, move) in ((mobile, first(moves)), (trapped, MoveMixture(moves, (1, 1); schedule=:cycle)))
+            state = initialize(key, target, device(initial); move, executor)
+            @test reduce(hcat, Array.(current_state(step!(state, 8)).positions)) != initial
+        end
+        state = initialize(key, target, device(Float32.(mobile)); move=first(moves), executor)
+        step!(state)
+        saved = snapshot(state)
+        # The one-ULP Float64 perturbation rounds back onto the trap in Float32.
+        @test_throws ArgumentError synchronize!(state, device(near), zeros(4))
+        @test Array.(current_state(state).positions) == Array.(saved.positions)
+        @test Array(current_state(state).accepted) == Array(saved.accepted)
+        @test Array(current_state(state).logdensities) == Array(saved.logdensities)
+        synchronize!(state, device(mobile), zeros(4))
+        @test reduce(hcat, Array.(current_state(state).positions)) == mobile
+        @test reduce(hcat, Array.(current_state(step!(state, 8)).positions)) != mobile
+    end
+
     @testset "Snooker projections beyond the coordinate range" begin
         points = [0 .1 .6 -.6; 0 .6 0 0]
         scale = floatmax(Float64)
