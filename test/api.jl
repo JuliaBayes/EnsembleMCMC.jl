@@ -92,6 +92,32 @@ end
     @test actual == expected
 end
 
+struct ShiftedCoordinates{T} <: AbstractVector{T}
+    values::Vector{T}
+end
+Base.size(x::ShiftedCoordinates) = size(x.values)
+Base.axes(x::ShiftedCoordinates) = (Base.IdentityUnitRange(0:(length(x.values) - 1)),)
+Base.IndexStyle(::Type{<:ShiftedCoordinates}) = IndexLinear()
+Base.getindex(x::ShiftedCoordinates, i::Int) = x.values[i + 1]
+
+@testset "Nested offset coordinates preserve replay" begin
+    initial = initial_walkers()[1:6]
+    shifted = ShiftedCoordinates.(copy.(initial))
+    @test validate_positions(shifted) === nothing
+    state = initialize(test_rng(), gaussian_logdensity, shifted)
+    reference = initialize(test_rng(), gaussian_logdensity, initial)
+    shifted[1].values[1] = 100
+    @test sample!(state, 4) == sample!(reference, 4)
+
+    replacement = [x .+ 0.25 for x in initial]
+    mixed = AbstractVector[replacement...]
+    mixed[2] = ShiftedCoordinates(replacement[2])
+    values = gaussian_logdensity.(replacement)
+    synchronize!(state, mixed, values)
+    synchronize!(reference, replacement, values)
+    @test snapshot(state) == snapshot(reference)
+end
+
 @testset "Addressed proposal index bounds" begin
     state = initialize(Philox4x64(UInt64.((573, 19))), gaussian_logdensity, initial_walkers())
     maximum_index = EnsembleMCMC._PROPOSALS_PER_PURPOSE

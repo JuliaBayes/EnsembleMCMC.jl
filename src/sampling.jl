@@ -295,7 +295,8 @@ Create one ensemble from a vector of finite coordinate vectors or a matrix
 with axes (coordinate, walker). The coordinates must have full affine rank
 and initial log densities other than NaN or +Inf. Initial values of -Inf are
 allowed with a warning: stretch, DE and snooker walkers far outside the support
-may never recover. The state copies the coordinates and retains a run key.
+may never recover. The state copies each coordinate vector in iteration order
+and retains a run key.
 
 Pass a PureRNGs key such as `Philox4x64(42)`. The same key and initial points
 reproduce a run within a fixed environment. Its bit position does not enter
@@ -344,7 +345,8 @@ function _prepare_ensemble(logdensity, initial; move=StretchMove(),
     validate_positions(initial)
     d = length(first(initial))
     T = float(_coordinate_type(initial))
-    positions = [Vector{T}(x) for x in initial]
+    positions = [Base.has_offset_axes(x) ? copyto!(Vector{T}(undef, d), x) : Vector{T}(x)
+        for x in initial]
     moves = move isa MoveMixture ? map(m -> prepare_move(m, T, d), move.moves) :
         (prepare_move(move, T, d),)
     length(moves) <= _PROPOSALS_PER_PURPOSE || throw(ArgumentError("Too many mixture components"))
