@@ -95,13 +95,17 @@ function _step!(state, workspace::KernelWorkspace, sweep, proposal_index)
             _sweep!(state, sweep, proposal_index)
         catch
             # A callback can enqueue device work before throwing.
-            _kernel_synchronize(workspace.positions, workspace.candidates,
-                workspace.batchpositions, workspace.values, workspace.logh,
-                workspace.indices, workspace.controls, workspace.uniforms,
-                workspace.valid, workspace.invalid, workspace.status,
-                state.logdensities, state.candidate_logdensities,
-                state.accepted, state.acceptance_probabilities)
-            foreach(_synchronize_move, state.moves)
+            try
+                _kernel_synchronize(workspace.positions, workspace.candidates,
+                    workspace.batchpositions, workspace.values, workspace.logh,
+                    workspace.indices, workspace.controls, workspace.uniforms,
+                    workspace.valid, workspace.invalid, workspace.status,
+                    state.logdensities, state.candidate_logdensities,
+                    state.accepted, state.acceptance_probabilities)
+                foreach(_synchronize_move, state.moves)
+            catch
+                # A failed device call can leave donated buffers unavailable to wait on.
+            end
             rethrow()
         end
     end

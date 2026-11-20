@@ -96,3 +96,18 @@ end
         Reactant.set_default_backend("gpu")
     end
 end
+
+@testset "Reactant preserves the sweep failure during cleanup" begin
+    initial = Reactant.to_rarray([-1.0 0 1 0; 0 -1 0 1])
+    scalar(x) = -sum(abs2, x) / 2
+    failure = ErrorException("density callback failed")
+    function batch!(values, positions)
+        # A failed PJRT call can leave its input marked as donated.
+        Reactant.mark_donated!(values)
+        throw(failure)
+    end
+    target = BatchedLogDensity(scalar, batch!; batch_size = 2)
+    state = initialize(Philox4x64(42), target, initial; executor = KernelExecutor())
+    @test_throws failure step!(state)
+    @test_throws ArgumentError current_state(state)
+end
