@@ -10,6 +10,26 @@ function batch_normal!(values, positions)
     return nothing
 end
 
+@testset "Reactant shuffle launch boundaries" begin
+    scalar(x) = -abs2(only(x)) / 2
+    key = Philox4x64(23)
+    for n in (256, 257, 4096, 4097)
+        initial = first(randn_next(Philox4x64(42), 1, n))
+        points = Reactant.to_rarray(initial)
+        width = cld(n, 2)
+        compiled = Reactant.Compiler.compile(
+            batch_normal!, (similar(points, width), similar(points, 1, width)),
+        )
+        target = BatchedLogDensity(scalar, compiled; batch_size = width)
+        device = initialize(key, target, points; move = DEMove(), executor = KernelExecutor())
+        serial = initialize(key, scalar, initial; move = DEMove())
+        actual, expected = sample!(device, 1), sample!(serial, 1)
+        @test Array(actual.accepted) == expected.accepted
+        @test Array(actual.positions) ≈ expected.positions
+        @test Array(actual.logdensities) ≈ expected.logdensities
+    end
+end
+
 @testset "Reactant transitions and retained history" begin
     scalar(x) = -sum(abs2, x) / 2
     initial = first(randn_next(Philox4x64(42), 2, 13))

@@ -79,6 +79,9 @@ struct ReactantExecution{C,D}
     history::Base.RefValue{Any}
 end
 
+# PJRT CUDA can exhaust launch resources with larger shuffle workgroups.
+EnsembleMCMC._shuffle_workgroup_limit(::ReactantExecution) = 128
+
 function EnsembleMCMC._kernel_execution(initial::Reactant.ConcretePJRTArray)
     return ReactantExecution(
         Reactant.XLA.client(initial),

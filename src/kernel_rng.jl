@@ -1,6 +1,8 @@
 # Walker IDs and the initial permutation stay on the same device as the positions.
 _kernel_vector(initial, values) = copyto!(similar(initial, eltype(values), length(values)), values)
 
+_shuffle_workgroup_limit(execution) = 512
+
 _purpose_buffer(initial, key::AbstractPureRNG) = similar(initial, typeof(key), 4)
 _purpose_buffer(initial, key::T, buffer::AbstractVector{T}) where {T<:AbstractPureRNG} = buffer
 _purpose_buffer(initial, key, buffer) = _purpose_buffer(initial, key)
@@ -189,7 +191,7 @@ function _sweep_inputs(state, w::KernelWorkspace, sweep_key, proposal_index)
     if n <= 4096
         # The walker count bounds every link. Three Int32 entries per slot use at most 48 KiB.
         capacity = nextpow(2, n)
-        threads = min(512, capacity)
+        threads = min(_shuffle_workgroup_limit(w.execution), capacity)
         _launch_kernel(w, _permute_shared_kernel!, threads, threads, w.permutation, b.order, purposes,
             b.schedule, width, Val(capacity))
     else
