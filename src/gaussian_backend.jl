@@ -15,7 +15,7 @@ function _prepare_gaussian_group!(w::KernelWorkspace, move, state, group, indice
     _launch_kernel(w, _gather_gaussian_complement_kernel!, (32, 4),
         (size(w.positions, 1), n), move.scratch, w.positions, w.permutation, indices)
     scale, valid = _fit_gaussian!(move.anchor, move.mean, move.factor, move.scratch, n,
-        move.shrinkage, w.execution)
+        move.shrinkage, w.execution, view(move.scratch, :, size(move.scratch, 2)))
     return _FittedGaussianMove(move, scale, valid)
 end
 

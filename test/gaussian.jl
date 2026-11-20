@@ -147,6 +147,38 @@
         @test fit(:auto).valid
     end
 
+    @testset "Rank of the frozen covariance in coordinate units" begin
+        # The first complementary group is columns [2, 4, 1].
+        group = [5, 6, 3]
+        X = [4.0 0 4 1 0 1; 4 0 5 1 1 2]
+        # The rank-one complement requires half shrinkage, giving mean (5/3, 5/3)
+        # and covariance (13/3) * [1 1/2; 1/2 1]. Set the target equal to this fit.
+        function target(x)
+            u, v = x .- 5/3
+            return -2/13 * (u^2 - u*v + v^2)
+        end
+        function run(X, shrinkage)
+            state = initialize(Philox4x64(3), target, X; move=GaussianReplacementMove(; shrinkage))
+            step!(state)
+            return snapshot(state)
+        end
+        @test run(X, :auto).acceptance_probabilities[group] ≈ ones(3)
+        X[:, [2, 4, 1]] .= [-3 1 2; -3 1 2]
+        rejected = run(X, 0)
+        @test reduce(hcat, rejected.candidates[group]) == X[:, group]
+        @test !any(rejected.accepted[group])
+
+        X = [0.0 0 2 1 3 1; 1 0 -1 0 1 2]
+        for s in (:auto, 0)
+            expected = reduce(hcat, run(X, s).candidates[group])
+            scaled = copy(X)
+            scaled[2, [2, 4, 1]] .*= 1e-10
+            actual = reduce(hcat, run(scaled, s).candidates[group])
+            actual[2, :] ./= 1e-10
+            @test actual ≈ expected
+        end
+    end
+
     @testset "Float32 fit far from the origin" begin
         X = first(randn_next(Philox4x64(UInt64.((19, 1))), Float32, 2, 40)) .+ 1f6
         anchor, μ, factor = zeros(Float32, 2), zeros(Float32, 2), zeros(Float32, 2, 2)

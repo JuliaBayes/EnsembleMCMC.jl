@@ -8,13 +8,15 @@ With the default `shrinkage=:auto`, the proposal covariance is `(1 + d/m) * C`,
 where `C` is the unbiased sample covariance of the `m` complement walkers. This
 is affine invariant when the fit succeeds. The factor `1 + d/m` widens the
 directions that a small complement underestimates. If `m <= d` or `C` is not
-positive definite, the move uses `shrinkage=1/2` for that group. This isotropic
+numerically positive definite, the move uses `shrinkage=1/2` for that group. This isotropic
 fallback is not affine invariant.
 
 A finite `shrinkage` in `[0, 1]` shrinks `C` toward `tr(C)/d * I` instead. This
 is not scale invariant: on targets with very different scales or strong
 correlations, a positive value makes the proposal too wide and acceptance
 collapses. `shrinkage=0` uses `C` unchanged.
+For an unregularized fit, each Cholesky pivot must exceed its marginal
+standard deviation times `sqrt(d * eps(T))` in the fit precision `T`.
 
 Uses two groups and requires at least `max(2d, 4)` walkers, or `2(d+1)` when
 `shrinkage=0`. More walkers give the covariance fit more points. Acceptance
@@ -91,7 +93,9 @@ function _allocate_move(move::GaussianReplacementMove, positions, L)
 end
 
 # The fit is `anchor + scale * N(mean, L L')` with `L` in the lower triangle of `factor`.
-function _fit_gaussian!(anchor, mean, factor, scratch, n, shrinkage, execution=nothing)
+# A complement occupies only part of the scratch matrix, leaving its last column for thresholds.
+function _fit_gaussian!(anchor, mean, factor, scratch, n, shrinkage, execution=nothing,
+    thresholds=similar(mean))
     T = eltype(mean)
     d = length(mean)
     centered = view(scratch, :, 1:n)
@@ -100,13 +104,17 @@ function _fit_gaussian!(anchor, mean, factor, scratch, n, shrinkage, execution=n
     isfinite(host_scale) && host_scale > zero(T) || return scale, false
     valid = _kernel_execute(execution, _standardize_gaussian!, mean, centered, scale, n)
     _host_scalar(valid) || return scale, false
-    if shrinkage isa Symbol
-        n > d && _gaussian_cholesky!(factor, centered, n, 1 + T(d) / n, execution) && return scale, true
+    tolerance = sqrt(d * eps(T))
+    if shrinkage isa Symbol && n > d
+        _kernel_execute(execution, _gaussian_covariance!, factor, centered, n, 1 + T(d) / n)
+        valid = _kernel_execute(execution, _gaussian_cholesky!, factor, thresholds, tolerance)
+        _host_scalar(valid) && return scale, true
     end
     s = _explicit_shrinkage(shrinkage, T)
     _kernel_execute(execution, _gaussian_covariance!, factor, centered, n, one(T))
     _kernel_execute(execution, _shrink_gaussian!, factor, s)
-    return scale, _host_scalar(_kernel_execute(execution, _gaussian_cholesky!, factor))
+    pivots = iszero(s) ? thresholds : nothing
+    return scale, _host_scalar(_kernel_execute(execution, _gaussian_cholesky!, factor, pivots, tolerance))
 end
 
 function _center_gaussian!(anchor, centered)
@@ -140,16 +148,21 @@ _explicit_shrinkage(shrinkage::Real, ::Type) = shrinkage
 _gaussian_covariance!(factor, centered, n, inflation) =
     mul!(factor, centered, transpose(centered), inflation / (n - 1), zero(eltype(factor)))
 
-function _gaussian_cholesky!(factor, centered, n, inflation, execution=nothing)
-    _kernel_execute(execution, _gaussian_covariance!, factor, centered, n, inflation)
-    return _host_scalar(_kernel_execute(execution, _gaussian_cholesky!, factor))
+# Compare each conditional standard deviation to the marginal in the same units.
+function _gaussian_cholesky!(factor, thresholds, tolerance)
+    all(isfinite, factor) || return false
+    isnothing(thresholds) || (thresholds .= tolerance .* sqrt.(view(factor, diagind(factor))))
+    fit = cholesky!(Symmetric(factor, :L); check=false)
+    isposdef(fit) || return false
+    isnothing(thresholds) && return all(isfinite, factor)
+    # A nonfinite lower entry also spoils its row's diagonal in the Cholesky update.
+    return _gaussian_pivots_resolved(factor, thresholds)
 end
 
-function _gaussian_cholesky!(factor)
-    all(isfinite, factor) || return false
-    fit = cholesky!(Symmetric(factor, :L); check=false)
-    return isposdef(fit) && all(isfinite, factor)
-end
+_gaussian_pivots_resolved(factor, thresholds) = mapreduce(
+    (p, limit) -> isfinite(p) && p > limit, &, view(factor, diagind(factor)), thresholds)
+_gaussian_pivots_resolved(factor::Matrix, thresholds) =
+    all(i -> isfinite(factor[i, i]) && factor[i, i] > thresholds[i], eachindex(thresholds))
 
 _prepare_group!(move::_AllocatedGaussianMove, state, group, complement, streams) =
     _prepare_gaussian_group!(state.batch_workspace, move, state, group, only(complement), streams)
@@ -159,7 +172,7 @@ function _prepare_gaussian_group!(workspace, move, state, group, complement, str
         copyto!(view(move.scratch, :, j), state.positions[i])
     end
     scale, valid = _fit_gaussian!(move.anchor, move.mean, move.factor, move.scratch,
-        length(complement), move.shrinkage)
+        length(complement), move.shrinkage, nothing, view(move.scratch, :, size(move.scratch, 2)))
     if valid
         # Store each coordinate contiguously across the active walkers.
         work = reshape(view(move.scratch, :, 1:length(group)), length(group), length(move.mean))

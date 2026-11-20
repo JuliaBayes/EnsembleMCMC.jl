@@ -199,12 +199,15 @@ function EnsembleMCMC._gaussian_covariance!(
     return factor
 end
 
-function EnsembleMCMC._gaussian_cholesky!(factor::Reactant.TracedRArray)
+function EnsembleMCMC._gaussian_cholesky!(factor::Reactant.TracedRArray, thresholds, tolerance)
     # Reactant's cholesky! wrapper allocates upper factors. The move needs an
     # in-place lower factor and a validity flag, which this device operation supplies.
     finite = all(isfinite, factor)
+    isnothing(thresholds) || (thresholds .= tolerance .* sqrt.(diag(factor)))
     factor .= tril(Reactant.Ops.cholesky(factor; lower = true))
-    return finite & all(isfinite, factor) & all(>(0), diag(factor))
+    pivots = diag(factor)
+    valid = isnothing(thresholds) ? all(>(0), pivots) : all(pivots .> thresholds)
+    return finite & all(isfinite, factor) & valid
 end
 
 end
