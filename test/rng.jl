@@ -51,7 +51,7 @@ end
 @testset "Sparse Gaussian blocks match scalar walker addresses" begin
     key = Threefry2x32(83)
     for d in (3, 8, 13)
-        initial = randn(Xoshiro(31), Float32, d, 2d + 2)
+        initial = first(randn_next(Philox4x64(31), Float32, d, 2d + 2))
         ids = 31 .* collect(axes(initial, 2))
         ids[2] = typemax(Int32) - 2
         state = initialize(key, gaussian_logdensity, initial; move=GaussianReplacementMove(), walker_ids=ids)

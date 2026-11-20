@@ -1,4 +1,5 @@
-using EnsembleMCMC, Reactant, CUDA, Random, Random123, Test
+using EnsembleMCMC, Reactant, CUDA, Test
+using PureRNGs: Philox4x64, randn_next
 using EnsembleMCMC: initialize, step!, sample!, snapshot, synchronize!, current_state
 
 Reactant.set_default_backend("gpu")
@@ -11,7 +12,7 @@ end
 
 @testset "Reactant transitions and retained history" begin
     scalar(x) = -sum(abs2, x) / 2
-    initial = randn(Xoshiro(42), 2, 13)
+    initial = first(randn_next(Philox4x64(42), 2, 13))
     device_initial = Reactant.to_rarray(initial)
     compiled = Reactant.Compiler.compile(
         batch_normal!,
@@ -24,14 +25,14 @@ end
     for move in (StretchMove(), DEMove(), DESnookerMove(), GaussianReplacementMove())
         start = move isa Union{DESnookerMove,GaussianReplacementMove} ? repeated : initial
         device = initialize(
-            Philox4x((12, 1)),
+            Philox4x64(UInt64.((12, 1))),
             target,
             Reactant.to_rarray(start);
             move,
             executor = KernelExecutor(),
         )
         host = initialize(
-            Philox4x((12, 1)),
+            Philox4x64(UInt64.((12, 1))),
             BatchedLogDensity(scalar, batch_normal!),
             start;
             move,
@@ -48,13 +49,13 @@ end
     Reactant.set_default_backend("cpu")
     try
         device = initialize(
-            Philox4x((17, 1)),
+            Philox4x64(UInt64.((17, 1))),
             target,
             device_initial;
             executor = KernelExecutor(),
         )
         host = initialize(
-            Philox4x((17, 1)),
+            Philox4x64(UInt64.((17, 1))),
             BatchedLogDensity(scalar, batch_normal!),
             initial;
             executor = KernelExecutor(),

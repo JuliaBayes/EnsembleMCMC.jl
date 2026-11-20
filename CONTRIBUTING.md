@@ -54,7 +54,7 @@ executed lines, not statistical correctness. No coverage percentage target is se
 from the repository root:
 
 ```sh
-julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.develop(path="."); Pkg.add(["CUDA", "MLDataDevices", "PureRNGs", "Random123", "Test"]); include("test/cuda.jl")'
+julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.develop(path="."); Pkg.add(["CUDA", "MLDataDevices", "PureRNGs", "Test"]); include("test/cuda.jl")'
 ```
 
 The tests use the current device. Call `CUDA.device!(i)` before the include to
@@ -64,7 +64,7 @@ is skipped with an `@info` if no second device can open a context.
 The Reactant backend has a separate GPU test entry point:
 
 ```sh
-julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.develop(path="."); Pkg.add(["CUDA", "Reactant", "Random123", "Test"]); include("test/reactant.jl")'
+julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.develop(path="."); Pkg.add(["CUDA", "Reactant", "PureRNGs", "Test"]); include("test/reactant.jl")'
 ```
 
 ## Before a release

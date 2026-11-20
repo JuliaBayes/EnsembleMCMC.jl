@@ -1,9 +1,9 @@
 # GPU tests. `Pkg.test()` does not run them. Run from the repository root on a CUDA machine:
-#   julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.develop(path="."); Pkg.add(["CUDA", "MLDataDevices", "PureRNGs", "Random123", "Test"]); include("test/cuda.jl")'
+#   julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.develop(path="."); Pkg.add(["CUDA", "MLDataDevices", "PureRNGs", "Test"]); include("test/cuda.jl")'
 # The tests use the current device. Call `CUDA.device!(i)` before the include to choose another one.
-using CUDA, EnsembleMCMC, Random, Random123, Test
+using CUDA, EnsembleMCMC, Test
 using MLDataDevices: CUDADevice
-using PureRNGs: Philox4x64
+using PureRNGs: Philox4x64, rand_next, randn_next, subrng
 using EnsembleMCMC: initialize, step!, sample!, current_state, snapshot, synchronize!
 test_rng() = CUDADevice()(Philox4x64(573))
 include("overflow.jl")
@@ -29,7 +29,7 @@ function test_cuda()
     test_kernel_executor(CuArray)
 
     @testset "CUDA storage and launch boundaries" begin
-        initial = randn(MersenneTwister(31), 33, 132)
+        initial = first(randn_next(Philox4x64(31), 33, 132))
         scalar(x) = -sum(abs2, x) / 2
         batch!(v, x) = (v .= vec(-sum(abs2, x; dims=1) / 2))
         target = BatchedLogDensity(scalar, batch!)
@@ -82,7 +82,7 @@ function test_cuda()
         scalar(x) = -sum(abs2, x) / 2
         batch!(v, x) = (v .= vec(-sum(abs2, x; dims=1) / 2))
         target = BatchedLogDensity(scalar, batch!)
-        host = randn(MersenneTwister(8), 4, 16)
+        host = first(randn_next(Philox4x64(8), 4, 16))
         initial = wrap(CuArray(host))
         @test initial isa CUDA.AnyCuArray && !(initial isa CuArray)
         reference = Array(initial)

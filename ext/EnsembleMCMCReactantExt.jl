@@ -1,6 +1,7 @@
 module EnsembleMCMCReactantExt
 
 import EnsembleMCMC
+import PureRNGs
 import Reactant
 using LinearAlgebra: diag, tril
 
@@ -93,6 +94,7 @@ _signature(x::Reactant.ConcretePJRTArray) = (typeof(x), size(x))
 _signature(x::Reactant.ConcretePJRTNumber) = typeof(x)
 _signature(x::SubArray) =
     (typeof(x), _signature(parent(x)), map(_signature, parentindices(x)))
+_signature(x::Tuple) = (typeof(x), map(_signature, x))
 _signature(x::AbstractRange) = (typeof(x), first(x), step(x), length(x))
 _signature(x::Base.Slice) = (typeof(x), _signature(x.indices))
 
@@ -102,6 +104,46 @@ function EnsembleMCMC._kernel_execute(execution::ReactantExecution, f, args...)
         Reactant.Compiler.compile(f, args; client = execution.client)
     end
     return compiled(args...)
+end
+
+# Keep the engine and round count static. Supply the key words as an XLA operand.
+function EnsembleMCMC._kernel_rng(positions::Reactant.ConcretePJRTArray, key)
+    words = PureRNGs.rngkey(key)
+    template = PureRNGs._derived_rng(PureRNGs.MLDataDevices.CUDADevice()(key), map(zero, words))
+    return (template, Reactant.ConcretePJRTArray(collect(words);
+        client=Reactant.XLA.client(positions), device=Reactant.XLA.device(positions)))
+end
+
+@inline function EnsembleMCMC._device_rng((template, data)::Tuple)
+    words = ntuple(i -> data[i], Val(length(PureRNGs.rngkey(template))))
+    return PureRNGs._derived_rng(template, words)
+end
+
+# XLA stores primitive words. The template preserves the engine and round count.
+function EnsembleMCMC._purpose_buffer(positions::Reactant.ConcretePJRTArray, key::Tuple)
+    template = first(key)
+    words = PureRNGs.rngkey(template)
+    return (template, similar(positions, eltype(words), length(words), 4))
+end
+
+function EnsembleMCMC._purpose_buffer(positions::Reactant.ConcretePJRTArray, key::Tuple, buffer::Tuple)
+    template = first(key)
+    words = PureRNGs.rngkey(template)
+    storage = last(buffer)
+    eltype(storage) === eltype(words) && size(storage, 1) == length(words) && return (template, storage)
+    return EnsembleMCMC._purpose_buffer(positions, key)
+end
+
+@inline function EnsembleMCMC._store_purpose!((_, storage)::Tuple, lane, key)
+    words = PureRNGs.rngkey(key)
+    for i in eachindex(words)
+        storage[i, lane] = words[i]
+    end
+end
+
+@inline function EnsembleMCMC._purpose_key((template, storage)::Tuple, lane)
+    words = ntuple(i -> storage[i, lane], Val(length(PureRNGs.rngkey(template))))
+    return PureRNGs._derived_rng(template, words)
 end
 
 # A state can retain histories of different lengths. Keep only the latest program.

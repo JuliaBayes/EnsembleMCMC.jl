@@ -1,60 +1,91 @@
 using KernelAbstractions: @groupsize, @localmem, @synchronize
 
-KA.@kernel function _propose_linear_kernel!(
-    candidates,
-    positions,
-    controls,
-    factors,
-    logh,
-    valid,
-    indices,
-    accepted,
-    ::StretchMove,
-)
-    coordinate, j = @index(Global, NTuple)
-    walker = @inbounds controls[1, j]
-    companion = @inbounds controls[2, j]
-    stretch = @inbounds factors[1, j]
-    @inbounds candidates[coordinate, walker] = _linear_candidate(positions[coordinate, companion],
-        stretch, positions[coordinate, walker], positions[coordinate, companion])
-    if isone(coordinate)
-        @inbounds logh[j] = (size(positions, 1) - 1) * log(stretch)
-        @inbounds valid[j] = true
-        @inbounds indices[j] = j
-        @inbounds accepted[walker] = false
+KA.@kernel function _history_kernel!(positions, logdensities, accepted,
+    current_positions, current_logdensities, current_accepted, sweep)
+    i = @index(Global, Linear)
+    completed = sweep[] - 1
+    positions[completed * length(current_positions) + i] = current_positions[i]
+    n = length(current_accepted)
+    if i <= n
+        dest = completed * n + i
+        logdensities[dest] = current_logdensities[i]
+        accepted[dest] = current_accepted[i]
     end
 end
 
-KA.@kernel function _propose_linear_kernel!(
-    candidates,
-    positions,
-    controls,
-    factors,
-    logh,
-    valid,
-    indices,
-    accepted,
-    ::DEMove,
-)
-    coordinate, j = @index(Global, NTuple)
-    walker = @inbounds controls[1, j]
-    companion_a = @inbounds controls[2, j]
-    companion_b = @inbounds controls[3, j]
-    gamma = @inbounds factors[1, j]
-    @inbounds candidates[coordinate, walker] = _linear_candidate(positions[coordinate, walker],
-        gamma, positions[coordinate, companion_a], positions[coordinate, companion_b])
-    if isone(coordinate)
-        @inbounds logh[j] = zero(gamma)
-        @inbounds valid[j] = true
-        @inbounds indices[j] = j
-        @inbounds accepted[walker] = false
+@inline function _linear_batch_geometry(move::StretchMove, complement, streams, id, permutation, walker, d)
+    slot, scale = _proposal_parameters(move, complement, streams, id)
+    companion = permutation[slot]
+    return companion, walker, companion, scale, (d - 1) * log(scale)
+end
+@inline function _linear_batch_geometry(move::DEMove, complement, streams, id, permutation, walker, d)
+    first, second, scale = _proposal_parameters(move, complement, streams, id)
+    return walker, permutation[first], permutation[second], scale, zero(scale)
+end
+
+@inline function _draw_linear_walker!(values, controls, factors, logh, indices, accepted,
+    permutation, walker_ids, group, complement, move, keys, k, dimension)
+    # Fixed-width callbacks repeat the first candidate in all padded columns.
+    j = k <= length(group) ? k : 1
+    walker = permutation[group[j]]
+    id = walker_ids[walker]
+    streams = (; _device_streams(keys)..., words=nothing, ids=nothing)
+    origin, a, b, scale, correction = _linear_batch_geometry(move, complement, streams, id,
+        permutation, walker, dimension)
+    values[k] = Inf
+    if k == j
+        controls[1, j] = walker
+        factors[2, j] = _uniform_at(streams.acceptance, eltype(factors), id)
+        logh[j] = correction
+        indices[j] = j
+        accepted[walker] = false
     end
+    return walker, origin, a, b, scale
+end
+
+@inline function _write_linear_coordinates!(candidates, positions, batchpositions, draw,
+    k, n, coordinates)
+    walker, origin, a, b, scale = draw
+    for coordinate in coordinates
+        value = _linear_candidate(positions[coordinate, origin], scale,
+            positions[coordinate, a], positions[coordinate, b])
+        batchpositions[coordinate, k] = value
+        if k <= n
+            candidates[coordinate, walker] = value
+        end
+    end
+end
+
+KA.@kernel function _draw_linear_batch_kernel!(candidates, positions, batchpositions, values,
+    controls, factors, logh, indices, accepted, permutation, walker_ids, group, complement, move, keys)
+    k = @index(Global, Linear)
+    draw = _draw_linear_walker!(values, controls, factors, logh, indices, accepted,
+        permutation, walker_ids, group, complement, move, keys, k, size(positions, 1))
+    _write_linear_coordinates!(candidates, positions, batchpositions, draw,
+        k, length(group), axes(positions, 1))
+end
+
+# A workgroup shares one draw while its lanes traverse contiguous coordinates.
+KA.@kernel function _draw_wide_linear_batch_kernel!(candidates, positions, batchpositions, values,
+    controls, factors, logh, indices, accepted, permutation, walker_ids, group, complement, move, keys)
+    draw = @localmem Tuple{Int,Int,Int,Int,eltype(positions)} (1,)
+    if isone(@index(Local, Linear))
+        k = @index(Group, Linear)
+        draw[1] = _draw_linear_walker!(values, controls, factors, logh, indices, accepted,
+            permutation, walker_ids, group, complement, move, keys, k, size(positions, 1))
+    end
+    @synchronize
+    k = @index(Group, Linear)
+    lane = @index(Local, Linear)
+    _write_linear_coordinates!(candidates, positions, batchpositions, draw[1],
+        k, length(group), lane:@groupsize()[1]:size(positions, 1))
 end
 
 KA.@kernel function _propose_snooker_kernel!(
     candidates,
     positions,
     controls,
+    group,
     logh,
     valid,
     accepted,
@@ -63,7 +94,7 @@ KA.@kernel function _propose_snooker_kernel!(
     acceptance_probabilities,
     move::DESnookerMove,
 )
-    j = @index(Global, Linear)
+    j = group[@index(Global, Linear)]
     walker = @inbounds controls[1, j]
     reference = @inbounds controls[2, j]
     companion_a = @inbounds controls[3, j]
@@ -136,13 +167,13 @@ end
 const _SCAN_WIDTH = 256
 
 # One workgroup: each item scans a contiguous chunk, so the indices stay ascending.
-KA.@kernel function _compact_kernel!(indices, status, valid, n)
+KA.@kernel function _compact_kernel!(indices, status, valid, slots)
     counts = @localmem Int (_SCAN_WIDTH,)
     t = @index(Local, Linear)
-    chunk = cld(n, @groupsize()[1])
+    chunk = cld(length(slots), @groupsize()[1])
     count = 0
-    for j in ((t - 1) * chunk + 1):min(t * chunk, n)
-        count += @inbounds valid[j]
+    for j in ((t - 1) * chunk + 1):min(t * chunk, length(slots))
+        count += valid[slots[j]]
     end
     @inbounds counts[t] = count
     @synchronize
@@ -158,12 +189,13 @@ KA.@kernel function _compact_kernel!(indices, status, valid, n)
     end
     @synchronize
     t = @index(Local, Linear)
-    chunk = cld(n, @groupsize()[1])
+    chunk = cld(length(slots), @groupsize()[1])
     offset = @inbounds counts[t]
-    for j in ((t - 1) * chunk + 1):min(t * chunk, n)
-        if @inbounds valid[j]
+    for j in ((t - 1) * chunk + 1):min(t * chunk, length(slots))
+        slot = slots[j]
+        if valid[slot]
             offset += 1
-            @inbounds indices[offset] = j
+            indices[offset] = slot
         end
     end
 end

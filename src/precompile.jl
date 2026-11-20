@@ -1,7 +1,8 @@
 @setup_workload begin
     rng = PureRNGs.Philox4x64(42)
-    initial_rng = Xoshiro(42)
-    ensembles = (randn(initial_rng, Float64, 3, 12), randn(initial_rng, Float32, 3, 12))
+    initial_rng = subrng(rng, 1)
+    ensembles = (first(PureRNGs.randn_next(initial_rng, Float64, 3, 12)),
+        first(PureRNGs.randn_next(subrng(initial_rng, 1), Float32, 3, 12)))
     logdensity = x -> -sum(abs2, x) / 2
     batched = BatchedLogDensity(logdensity,
         (values, positions) -> map!(logdensity, values, eachcol(positions)))

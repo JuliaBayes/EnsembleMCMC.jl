@@ -12,7 +12,7 @@ Walkers interact, so they are not independent chains.
 
 ```julia
 using Pkg
-Pkg.add("EnsembleMCMC")
+Pkg.add(["EnsembleMCMC", "PureRNGs"])
 ```
 
 ## Infer a mean from measurements
@@ -25,7 +25,8 @@ The log posterior is the log likelihood plus the log prior. Terms that do not
 depend on `mu` can be omitted.
 
 ```@example inference
-using EnsembleMCMC, Random, Statistics
+using EnsembleMCMC, Statistics
+using PureRNGs: Philox4x64, randn_next, subrng
 
 measurements = [1.1, 1.9, 1.4, 0.9, 1.7]
 
@@ -36,8 +37,8 @@ function logdensity(x)
     return logprior + loglikelihood
 end
 
-rng = Xoshiro(42)
-initial = 2 .* randn(rng, 1, 24)  # one parameter, 24 walkers
+rng = Philox4x64(42)
+initial = 2 .* first(randn_next(subrng(rng, 1), 1, 24))  # one parameter, 24 walkers
 draws = EnsembleMCMC.sample(rng, logdensity, initial, 2_000; warmup=500)
 nothing # hide
 ```

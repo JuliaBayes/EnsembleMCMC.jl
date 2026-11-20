@@ -7,7 +7,7 @@ function test_proposal_overflow(device=identity; executor=SerialExecutor())
             scalar(x) = -abs2(x[1] / width)
             batch!(v, x) = (v .= -abs2.(vec(x) ./ width))
             target = executor isa KernelExecutor ? BatchedLogDensity(scalar, batch!) : scalar
-            state = initialize(Philox4x((8, 1)), target, device(initial);
+            state = initialize(Philox4x64(3), target, device(initial);
                 move=GaussianReplacementMove(), executor)
             step!(state)
             saved = snapshot(state)
@@ -22,16 +22,16 @@ function test_proposal_overflow(device=identity; executor=SerialExecutor())
     @testset "Linear proposals across the coordinate range" begin
         # These seeds put walker i in the first group with difference a - b.
         for (initial, move, seed, i, a, b) in (
-            ([-1.0 1.0], StretchMove(), 5, 1, 1, 2),
-            ([0.1 -1.0], StretchMove(), 24, 1, 1, 2),
-            ([-1.0 1.0 0.0 0.0], DEMove(gamma0=0.5, sigma=0), 18, 4, 2, 1),
+            ([-1.0 1.0], StretchMove(), 1, 1, 1, 2),
+            ([0.1 -1.0], StretchMove(), 28, 1, 1, 2),
+            ([-1.0 1.0 0.0 0.0], DEMove(gamma0=0.5, sigma=0), 25, 4, 2, 1),
             ([1.0 -1.0 0.0 -1.0], DEMove(gamma0=1, sigma=0), 8, 4, 1, 2),
         )
             function run(scale)
                 scalar(x) = -abs2(x[1] / scale) / 2
                 batch!(v, x) = (v .= -abs2.(vec(x) ./ scale) ./ 2)
                 target = executor isa KernelExecutor ? BatchedLogDensity(scalar, batch!) : scalar
-                state = initialize(Philox4x((seed, 1)), target, device(initial .* scale); move, executor)
+                state = initialize(Philox4x64(seed), target, device(initial .* scale); move, executor)
                 step!(state)
                 snapshot(state)
             end
@@ -57,7 +57,7 @@ function test_proposal_overflow(device=identity; executor=SerialExecutor())
         target = executor isa KernelExecutor ? BatchedLogDensity(scalar, batch!) : scalar
         move = DESnookerMove()
         # Walker 2 moves first, with walker 1 as reference and companions 4 and 3.
-        state = initialize(Philox4x((57, 19)), target, device(initial); move, executor)
+        state = initialize(Philox4x64(21), target, device(initial); move, executor)
         step!(state)
         saved = snapshot(state)
         x = points[:, 2]
@@ -76,7 +76,7 @@ function test_proposal_overflow(device=identity; executor=SerialExecutor())
         target = executor isa KernelExecutor ? BatchedLogDensity(scalar, batch!) : scalar
         tiny = nextfloat(0.0)
         # Walker 4 picks the opposite-sign companions and its jitter rounds the factor to zero.
-        state = initialize(Philox4x((18, 1)), target, device([-1e308 1e308 tiny tiny]);
+        state = initialize(Philox4x64(105), target, device([-1e308 1e308 tiny tiny]);
             move=DEMove(gamma0=tiny, sigma=1), executor)
         step!(state)
         saved = snapshot(state)
@@ -84,7 +84,7 @@ function test_proposal_overflow(device=identity; executor=SerialExecutor())
         @test Array(saved.accepted)[4]
 
         for initial in ([-1e308 1e308 0.0 0.0], [1e308 0.0 0.0 0.0])
-            state = initialize(Philox4x((2, 1)), target, device(initial);
+            state = initialize(Philox4x64(1), target, device(initial);
                 move=DEMove(gamma0=2, sigma=0), executor)
             step!(state)
             saved = snapshot(state)
@@ -94,7 +94,7 @@ function test_proposal_overflow(device=identity; executor=SerialExecutor())
         end
 
         # This seed overflows the jittered factor for all four walkers.
-        state = initialize(Philox4x((1, 1)), target, device([-1.0 1.0 0.0 0.0]);
+        state = initialize(Philox4x64(2), target, device([-1.0 1.0 0.0 0.0]);
             move=DEMove(gamma0=floatmax(Float64), sigma=10), executor)
         step!(state)
         saved = snapshot(state)

@@ -1,7 +1,6 @@
 module EnsembleMCMC
 
 using LinearAlgebra
-using Random
 import PureRNGs
 using PureRNGs: AbstractPureRNG, subrng
 using StaticArrays: SVector
@@ -26,6 +25,7 @@ include("batched.jl")
 include("sampling.jl")
 include("kernels.jl")
 include("backend.jl")
+include("kernel_rng.jl")
 include("gaussian.jl")
 include("gaussian_backend.jl")
 include("precompile.jl")
