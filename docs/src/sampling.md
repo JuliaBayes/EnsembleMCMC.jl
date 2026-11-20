@@ -58,6 +58,14 @@ Stretch and DE preserve their form under affine changes of coordinates. Snooker
 does not have that property. None of these properties guarantees that a run
 finds every mode of a distribution.
 
+With integer-valued starting coordinates, `DEMove(gamma0=1, sigma=0)` can
+stay on the integer grid because it adds integer differences. In one dimension,
+`DESnookerMove(scale=1)` can also stay on the grid because projecting onto
+the single axis leaves the difference unchanged. For a continuous target,
+use jitter large enough to change the rounded coordinates, or include
+`StretchMove()` with positive mixture weight. For example,
+`DEMove(gamma0=1, sigma=0.01)` can leave a unit-spaced grid near zero.
+
 ### Mix moves
 
 A mixture chooses one move for each complete sweep. With the default random
