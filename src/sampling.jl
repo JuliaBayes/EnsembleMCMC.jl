@@ -613,15 +613,19 @@ end
 # Wait for every task before throwing, and rethrow the first task error unwrapped
 # so that callers see the same exception type as with SerialExecutor.
 function _wait_tasks(tasks)
+    # `Some` distinguishes a thrown `nothing` from a successful wait.
     failure = nothing
     for task in tasks
         try
             wait(task)
         catch err
-            isnothing(failure) && (failure = err isa TaskFailedException ? err.task.exception : err)
+            if isnothing(failure)
+                cause = err isa TaskFailedException ? err.task.exception : err
+                failure = Some(cause)
+            end
         end
     end
-    isnothing(failure) || throw(failure)
+    isnothing(failure) || throw(something(failure))
     return nothing
 end
 

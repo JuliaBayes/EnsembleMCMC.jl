@@ -210,6 +210,21 @@ end
     end
 end
 
+@testset "Threaded targets can throw nothing" begin
+    initial = initial_walkers()[1:4]
+    values = gaussian_logdensity.(initial)
+    state = initialize(test_rng(), _ -> throw(nothing), initial;
+        executor=ThreadedExecutor(), logdensities=values)
+    result = try
+        step!(state)
+        :returned
+    catch err
+        Some(err)
+    end
+    @test result === Some(nothing)
+    @test_throws ArgumentError current_state(state)
+end
+
 @testset "Threaded failures wait for sibling callbacks" begin
     if Threads.nthreads(:default) > 1
         initial = initial_walkers()[1:4]
