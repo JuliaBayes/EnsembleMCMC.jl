@@ -307,10 +307,10 @@ The vector must match walker order and contain real values other than NaN or
 +Inf. Values are copied and promoted independently of coordinate precision.
 The caller must ensure they equal the target at the initial coordinates.
 
-Walker IDs default to the walker indices `1:nwalkers` and remain fixed throughout
-the run. The density must not mutate its input. A scalar density must support
-concurrent calls with ThreadedExecutor; a batched callback controls its own
-parallelism. During sampling, a candidate log density of NaN rejects the
+Walker IDs are read in iteration order, default to the walker indices `1:nwalkers`,
+and remain fixed throughout the run. The density must not mutate its input.
+A scalar density must support concurrent calls with ThreadedExecutor. A batched
+callback controls its own parallelism. A NaN candidate log density rejects the
 candidate like -Inf, and +Inf throws a `DomainError`. Do not mutate state fields.
 Use [`current_state`](@ref) for borrowed inspection and [`snapshot`](@ref) for copies.
 """
@@ -355,7 +355,10 @@ function _prepare_ensemble(logdensity, initial; move=StretchMove(),
     length(walker_ids) == n && all(id -> id isa Integer && 1 <= id <= typemax(Int32) - 2, walker_ids) &&
         allunique(walker_ids) ||
         throw(ArgumentError("Walker IDs must be $n distinct integers in 1:$(typemax(Int32) - 2)"))
-    ids = collect(Int, walker_ids)
+    ids = Vector{Int}(undef, n)
+    for (i, id) in enumerate(walker_ids)
+        ids[i] = id
+    end
     values = if isnothing(logdensities)
         [_checked_initial_logdensity(logdensity(x), i) for (i, x) in enumerate(positions)]
     else

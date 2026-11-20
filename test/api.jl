@@ -83,6 +83,15 @@ end
         sample!(initialize(test_rng(), lp, initial; move=MoveMixture(moves, [0.5, 1.0])), 6)
 end
 
+@testset "Offset walker IDs preserve replay" begin
+    initial = initial_walkers()[1:6]
+    ids = 3:8
+    expected = EnsembleMCMC.sample(test_rng(), gaussian_logdensity, initial, 5; walker_ids=collect(ids))
+    actual = EnsembleMCMC.sample(test_rng(), gaussian_logdensity, initial, 5;
+        walker_ids=Base.IdentityUnitRange(ids))
+    @test actual == expected
+end
+
 @testset "Addressed proposal index bounds" begin
     state = initialize(Philox4x64(UInt64.((573, 19))), gaussian_logdensity, initial_walkers())
     maximum_index = EnsembleMCMC._PROPOSALS_PER_PURPOSE
