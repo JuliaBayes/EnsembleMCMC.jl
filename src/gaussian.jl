@@ -95,11 +95,11 @@ end
 # The fit is `anchor + scale * N(mean, L L')` with `L` in the lower triangle of `factor`.
 # A complement occupies only part of the scratch matrix, leaving its last column for thresholds.
 function _fit_gaussian!(anchor, mean, factor, scratch, n, shrinkage, execution=nothing,
-    thresholds=similar(mean))
+    thresholds=similar(mean), center!::F = _center_gaussian!) where {F}
     T = eltype(mean)
     d = length(mean)
     centered = view(scratch, :, 1:n)
-    scale = _kernel_execute(execution, _center_gaussian!, anchor, centered)
+    scale = _kernel_execute(execution, center!, anchor, centered)
     host_scale = _host_scalar(scale)
     isfinite(host_scale) && host_scale > zero(T) || return scale, false
     valid = _kernel_execute(execution, _standardize_gaussian!, mean, centered, scale, n)
@@ -122,6 +122,13 @@ function _center_gaussian!(anchor, centered)
     anchor .= view(centered, :, 1)
     centered .-= anchor
     return maximum(abs, centered)
+end
+
+function _midrange_gaussian!(anchor, points)
+    # Half each endpoint before summing so the midpoint and both offsets fit.
+    anchor .= vec(minimum(points; dims=2)) ./ 2 .+ vec(maximum(points; dims=2)) ./ 2
+    points .-= anchor
+    return maximum(abs, points)
 end
 
 function _standardize_gaussian!(mean, centered, scale, n)
@@ -167,12 +174,24 @@ _gaussian_pivots_resolved(factor::Matrix, thresholds) =
 _prepare_group!(move::_AllocatedGaussianMove, state, group, complement, streams) =
     _prepare_gaussian_group!(state.batch_workspace, move, state, group, only(complement), streams)
 
-function _prepare_gaussian_group!(workspace, move, state, group, complement, streams)
-    for (j, i) in enumerate(complement)
-        copyto!(view(move.scratch, :, j), state.positions[i])
+function _fit_gaussian_group!(gather!::F, move, n, execution=nothing) where {F}
+    thresholds = view(move.scratch, :, size(move.scratch, 2))
+    args = (move.anchor, move.mean, move.factor, move.scratch, n, move.shrinkage, execution, thresholds)
+    gather!()
+    scale, valid = _fit_gaussian!(args...)
+    if !valid && isinf(_host_scalar(scale))
+        gather!()
+        return _fit_gaussian!(args..., _midrange_gaussian!)
     end
-    scale, valid = _fit_gaussian!(move.anchor, move.mean, move.factor, move.scratch,
-        length(complement), move.shrinkage, nothing, view(move.scratch, :, size(move.scratch, 2)))
+    return scale, valid
+end
+
+function _prepare_gaussian_group!(workspace, move, state, group, complement, streams)
+    scale, valid = _fit_gaussian_group!(move, length(complement)) do
+        for (j, i) in enumerate(complement)
+            copyto!(view(move.scratch, :, j), state.positions[i])
+        end
+    end
     if valid
         # Store each coordinate contiguously across the active walkers.
         work = reshape(view(move.scratch, :, 1:length(group)), length(group), length(move.mean))

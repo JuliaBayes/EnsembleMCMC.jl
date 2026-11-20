@@ -12,10 +12,10 @@ _synchronize_move(move::_AllocatedGaussianMove) =
 
 function _prepare_gaussian_group!(w::KernelWorkspace, move, state, group, indices, streams)
     n = length(indices)
-    _launch_kernel(w, _gather_gaussian_complement_kernel!, (32, 4),
-        (size(w.positions, 1), n), move.scratch, w.positions, w.permutation, indices)
-    scale, valid = _fit_gaussian!(move.anchor, move.mean, move.factor, move.scratch, n,
-        move.shrinkage, w.execution, view(move.scratch, :, size(move.scratch, 2)))
+    scale, valid = _fit_gaussian_group!(move, n, w.execution) do
+        _launch_kernel(w, _gather_gaussian_complement_kernel!, (32, 4),
+            (size(w.positions, 1), n), move.scratch, w.positions, w.permutation, indices)
+    end
     return _FittedGaussianMove(move, scale, valid)
 end
 

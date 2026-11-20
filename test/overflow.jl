@@ -136,6 +136,29 @@ function test_proposal_overflow(device=identity; executor=SerialExecutor())
         end
     end
 
+    @testset "Gaussian complements spanning opposite exponent limits" begin
+        for T in (Float32, Float64)
+            function run(upper)
+                initial = T[-0.75 0.75 -0.75 0.75] .* upper
+                density(x) = abs(x) <= upper ? zero(upper) : oftype(upper, -Inf)
+                target = BatchedLogDensity(x -> density(only(x)), (v, x) -> (v .= density.(vec(x))))
+                state = initialize(Philox4x64(3), target, device(initial);
+                    move=GaussianReplacementMove(), executor)
+                step!(state)
+                return snapshot(state)
+            end
+            unit, edge = run(one(T)), run(floatmax(T))
+            @test Array(edge.accepted) == Array(unit.accepted)
+            @test Array(edge.acceptance_probabilities) ≈ Array(unit.acceptance_probabilities)
+            for i in eachindex(unit.candidates)
+                y = only(Array(unit.candidates[i]))
+                if abs(y) <= 1
+                    @test only(Array(edge.candidates[i])) / floatmax(T) ≈ y
+                end
+            end
+        end
+    end
+
     @testset "Linear proposals across the coordinate range" begin
         # These seeds put walker i in the first group with difference a - b.
         for (initial, move, seed, i, a, b) in (
