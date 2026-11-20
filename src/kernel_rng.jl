@@ -3,7 +3,11 @@ _kernel_vector(initial, values) = copyto!(similar(initial, eltype(values), lengt
 
 _shuffle_workgroup_limit(execution) = 512
 
-_purpose_buffer(initial, key::AbstractPureRNG) = similar(initial, typeof(key), 4)
+function _purpose_buffer(initial, key::AbstractPureRNG)
+    # Sparse CPU coordinates still need dense storage for the four RNG keys.
+    return KA.get_backend(initial) isa KA.CPU ? Vector{typeof(key)}(undef, 4) :
+        similar(initial, typeof(key), 4)
+end
 _purpose_buffer(initial, key::T, buffer::AbstractVector{T}) where {T<:AbstractPureRNG} = buffer
 _purpose_buffer(initial, key, buffer) = _purpose_buffer(initial, key)
 
