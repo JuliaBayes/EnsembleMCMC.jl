@@ -15,9 +15,12 @@ function test_narrow_mixture_weights(device, executor)
     end
 end
 
+include("kernel_mixture.jl")
+
 function test_kernel_executor(device=copy)
     @testset "Kernel executor" begin
         test_proposal_overflow(device; executor=KernelExecutor())
+        test_keyed_kernel_mixture(device)
         test_narrow_mixture_weights(device, KernelExecutor())
         scalar(x::Vector) = -sum(abs2, x) / 2
         batch!(values, positions) = (values .= vec(-sum(abs2, positions; dims=1) / 2))

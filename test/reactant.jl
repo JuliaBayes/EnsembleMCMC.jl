@@ -3,6 +3,8 @@ using PureRNGs: Philox4x64, randn_next
 using EnsembleMCMC: initialize, step!, sample!, snapshot, synchronize!, current_state,
     validate_positions
 
+include("kernel_mixture.jl")
+
 Reactant.set_default_backend("gpu")
 CUDA.allowscalar(false)
 
@@ -137,3 +139,11 @@ end
     )
     @test_throws ArgumentError("Coordinates must be finite") validate_positions(columns[[5, 1, 4]])
 end
+
+function prepare_mixture_batch(batch!, points, width)
+    return Reactant.Compiler.compile(
+        batch!, (similar(points, width), similar(points, size(points, 1), width)),
+    )
+end
+
+test_keyed_kernel_mixture(Reactant.to_rarray, prepare_mixture_batch)
