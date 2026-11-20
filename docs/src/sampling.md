@@ -74,10 +74,8 @@ size(draws.positions)
 
 Here Stretch has probability `2/3` and DE has probability `1/3` at each sweep.
 For `Float16`, `Float32`, and `Float64` weights, selection uses a `Float64`
-uniform on a grid spaced by `2^-53`. Smaller probabilities can depend on component
-order. For example, the second move with weights `[1, 2^-54]` is unreachable.
-With the weights reversed, the first move is selected when the uniform is zero,
-with probability `2^-53`.
+uniform on a grid spaced by `2^-53`. Every positive component must have
+probability at least `2^-53`. The constructor rejects smaller probabilities.
 
 Use `schedule=:cycle` for a repeating sequence. Weights `[2, 1]` then mean Stretch,
 Stretch, DE, repeated. A cyclic schedule requires integer weights. Zero-weight

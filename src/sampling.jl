@@ -48,7 +48,8 @@ Select one move per complete sweep. `weights` is a vector or tuple of reals.
 selection probabilities after normalization, regardless of weight types.
 `schedule=:cycle` gives a repeating weighted cycle in component order and
 requires integer-valued weights. Weights must be finite and nonnegative,
-with at least one positive weight. The schedule and weights do not adapt.
+with at least one positive weight. Random selection in Float64 requires each
+positive probability to be at least `2^-53`. The schedule and weights do not adapt.
 Zero-weight components keep their indices but do not increase the required
 walker count.
 """
@@ -71,16 +72,44 @@ struct MoveMixture{M<:Tuple,W<:AbstractVector}
             total <= typemax(Int) || throw(ArgumentError("Mixture cycle is too long"))
             Int.(weights)
         elseif schedule == :random
-            values = _promoted_values(map(float, weights))
-            # Selection draws and cumulative sums use the normalized weights' precision.
-            T = promote_type(Float64, eltype(values))
-            scaled = values ./ convert(T, maximum(values))
-            scaled ./ sum(scaled)
+            _random_weights(weights)
         else
             throw(ArgumentError("Mixture schedule must be :random or :cycle"))
         end
         new{typeof(ms),typeof(ws)}(ms, ws)
     end
+end
+
+function _random_weights(weights)
+    values = _promoted_values(map(float, weights))
+    T = promote_type(Float64, eltype(values))
+    scaled = values ./ convert(T, maximum(values))
+    normalized = scaled ./ sum(scaled)
+    # A cumulative sum near one can lose O(n*eps) to rounding.
+    threshold = length(values) * eps(Float64)
+    if T === Float64 && any(i -> values[i] > 0 && normalized[i] <= threshold, eachindex(values))
+        return _grid_weights(values)
+    end
+    return normalized
+end
+
+function _grid_weights(values)
+    # The Float64 selection uniform takes exactly 2^53 values j/2^53.
+    # The number strictly below each exact cumulative boundary is its scaled ceiling.
+    masses = Rational{BigInt}.(values)
+    total = sum(masses)
+    cumulative = zero(eltype(masses))
+    previous = 0
+    weights = Vector{Float64}(undef, length(masses))
+    for i in eachindex(masses)
+        mass = (Int64(1) << 53) * masses[i]
+        0 < mass < total && throw(ArgumentError("Positive mixture probabilities must be at least 2^-53"))
+        cumulative += mass
+        edge = ceil(Int64, cumulative / total)
+        weights[i] = (edge - previous) * 0x1p-53
+        previous = edge
+    end
+    return weights
 end
 
 """

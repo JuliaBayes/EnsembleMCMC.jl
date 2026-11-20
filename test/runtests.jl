@@ -146,6 +146,21 @@ end
         rounded = MoveMixture(fill(StretchMove(), 18), [ones(Float16, 17); 0])
         @test EnsembleMCMC.sample(Philox4x64(13), gaussian_logdensity, initial_walkers(), 1;
             move=rounded).move_indices == [17]
+        grid = 0x1p-53
+        for weights in ([1, grid/2], [grid/2, 1], [1, grid], [floatmax(Float64), nextfloat(0.0)])
+            @test_throws ArgumentError MoveMixture(moves, weights)
+        end
+        for weights in ([1-grid, grid, 0], [grid, 0, 1-grid], [1-2grid, grid, grid])
+            mixture = MoveMixture(fill(StretchMove(), 3), weights)
+            @test mixture.weights == weights
+        end
+        # The last positive interval spans three of the highest uniform values.
+        weights = [ones(100); 100 * 4grid; 0]
+        mixture = MoveMixture(fill(StretchMove(), length(weights)), weights)
+        @test mixture.weights[end-1:end] == [3grid, 0]
+        @test EnsembleMCMC._weighted_move(mixture.weights, 1 - 3grid) == 101
+        @test EnsembleMCMC._weighted_move(mixture.weights, 1 - 4grid) == 100
+        @test MoveMixture(moves, BigFloat[1, grid/2]).weights[2] > 0
         float_cycle = initialize(test_rng(), gaussian_logdensity, initial_walkers();
             move=MoveMixture(moves, [2.0, 1.0]; schedule=:cycle))
         @test sample!(float_cycle, 9) == draws
