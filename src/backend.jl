@@ -57,7 +57,9 @@ function _initialize_kernel(rng, target, initial; logdensities=nothing, kwargs..
         d, n = size(initial)
         T, L = eltype(first(host.positions)), eltype(host.logdensities)
         positions = similar(initial, T, d, n)
-        moves = map(m -> _kernel_move(m, positions, L), host.moves)
+        moves = _allocate_active_moves(host.moves, host.weights) do m
+            _kernel_move(m, positions, L)
+        end
         all(_kernel_move_supported, moves) ||
             throw(ArgumentError("KernelExecutor supports only the built-in moves"))
         capacity = _batch_capacity(target, n, moves, host.weights)

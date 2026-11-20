@@ -5,7 +5,7 @@ function _kernel_move(move::GaussianReplacementMove, initial, L)
         similar(initial, T, d, d), similar(initial, T, d, n), nothing)
 end
 
-_kernel_move_supported(::_AllocatedGaussianMove) = true
+_kernel_move_supported(::Union{GaussianReplacementMove,_AllocatedGaussianMove}) = true
 
 _synchronize_move(move::_AllocatedGaussianMove) =
     _kernel_synchronize(move.anchor, move.mean, move.factor, move.scratch)

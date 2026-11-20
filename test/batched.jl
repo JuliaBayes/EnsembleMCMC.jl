@@ -103,3 +103,31 @@
         end
     end
 end
+
+@testset "Inactive Gaussian components use no workspace" begin
+    initial = first(randn_next(Philox4x64(42), 16, 40))
+    batch!(values, positions) = map!(gaussian_logdensity, values, eachcol(positions))
+    target = BatchedLogDensity(gaussian_logdensity, batch!)
+    for schedule in (:cycle, :random), executor in (SerialExecutor(), KernelExecutor())
+        move = MoveMixture((GaussianReplacementMove(), StretchMove()), (0, 1); schedule)
+        mixed = initialize(test_rng(), target, initial; move, executor)
+        reference = initialize(test_rng(), target, initial; executor)
+        @test Base.summarysize(mixed) - Base.summarysize(reference) < sizeof(initial) ÷ 2
+        for key in (nothing, Threefry4x64(93))
+            if isnothing(key)
+                step!(mixed)
+                # Address the forced Stretch with the original mixture component index.
+                step!(reference, subrng(test_rng(), 0, 0); proposal_index=2)
+            else
+                step!(mixed, key; proposal_index=17)
+                step!(reference, key; proposal_index=17)
+            end
+            actual, expected = current_state(mixed), current_state(reference)
+            @test actual.positions == expected.positions
+            @test actual.candidates == expected.candidates
+            @test actual.accepted == expected.accepted
+            @test actual.move_index == 2
+        end
+        @test current_state(mixed).attempts == [0, 2size(initial, 2)]
+    end
+end

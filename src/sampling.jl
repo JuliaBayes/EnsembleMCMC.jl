@@ -225,6 +225,11 @@ end
 _coordinate_type(::AbstractVector{<:AbstractVector{T}}) where {T} = T
 _coordinate_type(initial) = promote_type(map(eltype, initial)...)
 _allocate_move(move, positions, L) = move
+
+# Keep the original component indices for reports and addressed RNG streams.
+_allocate_active_moves(allocate, moves, ::Nothing) = map(allocate, moves)
+_allocate_active_moves(allocate, moves, weights) =
+    ntuple(i -> weights[i] > 0 ? allocate(moves[i]) : moves[i], length(moves))
 _prepare_group!(move, state, group, complement, streams) = move
 _promoted_values(values::AbstractVector{T}) where {T} =
     isconcretetype(T) ? values : collect(promote(values...))
@@ -322,12 +327,15 @@ function initialize(
     executor isa KernelExecutor && throw(ArgumentError("KernelExecutor requires an initial matrix"))
     prepared = _prepare_ensemble(logdensity, initial; kwargs...)
     (; positions, logdensities, weights, walker_ids, walker_order) = prepared
-    moves = map(m -> _allocate_move(m, positions, eltype(logdensities)), prepared.moves)
+    moves = _allocate_active_moves(prepared.moves, weights) do m
+        _allocate_move(m, positions, eltype(logdensities))
+    end
+    active = isnothing(weights) ? moves : (moves[i] for i in eachindex(moves) if weights[i] > 0)
     d, n = length(first(positions)), length(positions)
     T = eltype(first(positions))
     A = _acceptance_type(T, eltype(logdensities))
     return EnsembleState(logdensity, moves, weights, executor, _cpu_rng(rng), walker_ids, walker_order,
-        _draw_buffers(T, A, walker_ids, d, moves),
+        _draw_buffers(T, A, walker_ids, d, active),
         positions, deepcopy(positions), logdensities, copy(logdensities),
         _batch_workspace(logdensity, positions, logdensities, moves, weights),
         fill(false, n), zeros(A, n),
