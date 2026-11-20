@@ -12,6 +12,14 @@
     @test_throws ArgumentError validate_positions(nonfinite)
 end
 
+@testset "Float16 affine rank across population sizes" begin
+    for n in (1023, 1024, 1025)
+        positions = reshape(Float16.(isodd.(1:n)), 1, :)
+        @test validate_positions(positions) === nothing
+        @test_throws ArgumentError validate_positions(vcat(positions, positions))
+    end
+end
+
 @testset "Position validation across numeric scales" begin
     for positions in (
         reshape([-1e308, 1e308], 1, :),

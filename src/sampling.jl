@@ -243,8 +243,9 @@ Base.show(io::IO, ::MIME"text/plain", state::EnsembleState) = show(io, state)
 Check that a vector of coordinate vectors or a coordinate-by-walker matrix has
 positive, matching dimensions, finite real coordinates, and full affine rank.
 Return `nothing` without changing the input. Rank validation uses an owned host
-matrix of the positions relative to the first walker, in the floating-point
-coordinate type `T`, after uniform power-of-two rescaling. Singular values at or
+matrix of the positions relative to the first walker after uniform power-of-two
+rescaling. The working type `T` is the floating-point coordinate type, with
+`Float16` widened to `Float32`. Singular values at or
 below `max(d, n) * eps(T)` times the largest one count as zero, as in
 `LinearAlgebra.rank`. A full-rank ensemble whose
 smallest-to-largest singular value ratio is below `sqrt(eps(T))` gives a warning,
@@ -260,7 +261,8 @@ function validate_positions(positions::AbstractVector)
     d = length(first(positions))
     d > 0 && all(x -> length(x) == d, positions) ||
         throw(DimensionMismatch("Walker dimensions must agree and be positive"))
-    T = float(_coordinate_type(positions))
+    coordinate_type = float(_coordinate_type(positions))
+    T = coordinate_type === Float16 ? Float32 : coordinate_type
     T <: AbstractFloat || throw(ArgumentError("Coordinates must be real floating-point values"))
     centered = Matrix{T}(reduce(hcat, positions))
     all(isfinite, centered) || throw(ArgumentError("Coordinates must be finite"))
