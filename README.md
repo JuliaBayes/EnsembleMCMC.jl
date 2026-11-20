@@ -9,7 +9,16 @@ Sample a log density with an ensemble of walkers. EnsembleMCMC provides Stretch,
 differential-evolution, snooker, and Gaussian replacement moves, with threads and
 CUDA support. It needs no gradients.
 
-Install the package with `using Pkg; Pkg.add(["EnsembleMCMC", "PureRNGs"])`.
+For the stable guide, run `import Pkg` followed by
+`Pkg.add(["EnsembleMCMC", "PureRNGs"])`.
+
+This example follows `dev`.
+
+```julia
+using Pkg
+Pkg.add(url="https://github.com/JuliaBayes/EnsembleMCMC.jl", rev="dev")
+Pkg.add("PureRNGs")
+```
 
 ```julia
 using EnsembleMCMC
@@ -32,8 +41,8 @@ Reuse the PureRNGs key to replay the ensemble in the same environment.
 Choose warmup and run length for the target. Sampling does not test convergence.
 
 Use `initialize`, `step!`, and `sample!` to continue a run or store samples in blocks.
-The [guide](https://juliabayes.org/EnsembleMCMC.jl/stable/) covers a complete inference
-example, starting points, move choice, and interpreting results.
+The [development guide](https://juliabayes.org/EnsembleMCMC.jl/dev/) covers a complete
+inference example, starting points, move choice, and interpreting results.
 
 [Stable docs](https://juliabayes.org/EnsembleMCMC.jl/stable/) ·
 [Development docs](https://juliabayes.org/EnsembleMCMC.jl/dev/) ·

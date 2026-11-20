@@ -10,9 +10,19 @@ Walkers interact, so they are not independent chains.
 
 ## Install
 
+**For the stable guide**
+
 ```julia
 using Pkg
 Pkg.add(["EnsembleMCMC", "PureRNGs"])
+```
+
+**For the development guide**
+
+```julia
+using Pkg
+Pkg.add(url="https://github.com/JuliaBayes/EnsembleMCMC.jl", rev="dev")
+Pkg.add("PureRNGs")
 ```
 
 ## Infer a mean from measurements
