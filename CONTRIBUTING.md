@@ -71,7 +71,11 @@ julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.develop(path="."); Pkg.add(["C
 ## Before a release
 
 - Confirm all required CI jobs pass on the exact release commit. Review allowed-failure prerelease jobs separately.
-- For backend changes, run the CUDA suite on a functional GPU at that commit. Record the device, Julia/CUDA versions, pass count, and any second-device skip. A skip-only run is not validation.
+- Check backend changes on GPU hardware at the exact release commit. Run both
+  native CUDA and Reactant GPU suites for shared backend changes, including
+  kernel or RNG changes. For a backend-specific change, run its suite. Record
+  the commit, GPU, Julia and backend package versions, and pass count separately
+  for each suite. Record any skipped second-device CUDA test.
 - Review all documented public constructors, methods, keywords, defaults, and result fields, including qualified methods. Document API breaks and trajectory changes.
 - Update the changelog from unreleased to the chosen version and date.
 - Confirm `Project.toml` matches that version.
