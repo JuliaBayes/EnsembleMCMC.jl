@@ -370,13 +370,23 @@ end
 # Float16 uniforms have only 2,048 possible values, including zero.
 _acceptance_type(T, L) = promote_type(Float32, T, L)
 
-@inline function _acceptance_probability(::Type{T}, proposed, current, log_hastings) where {T}
+_hastings_scale(move) = Val(1)
+
+@inline function _acceptance_probability(::Type{T}, proposed, current, log_hastings,
+    ::Val{scale}=Val(1)) where {T,scale}
     L = promote_type(T, typeof(log_hastings))
-    ratio = convert(T, (convert(L, proposed) - current) + log_hastings)
+    difference = convert(L, proposed) - current
+    ratio = if scale != 1 && !isfinite(difference)
+        # Opposite infinite terms can have a finite sum at the limits of the exponent range.
+        scale * ((convert(L, proposed) / scale - current / scale) + log_hastings)
+    else
+        difference + scale * log_hastings
+    end
+    ratio = convert(T, ratio)
     return isnan(ratio) ? zero(T) : clamp(exp(ratio), zero(T), one(T))
 end
 
-Base.@inline function _accept_candidate!(state, i, log_hastings, logd, acceptance_part, batched=false)
+Base.@inline function _accept_candidate!(state, i, log_hastings, logd, acceptance_part, scale, batched=false)
     stored_logd = convert(eltype(state.logdensities), logd)
     if isnan(stored_logd)
         stored_logd = convert(eltype(state.logdensities), -Inf)
@@ -385,7 +395,7 @@ Base.@inline function _accept_candidate!(state, i, log_hastings, logd, acceptanc
     end
     state.candidate_logdensities[i] = stored_logd
     T = eltype(state.acceptance_probabilities)
-    probability = _acceptance_probability(T, stored_logd, state.logdensities[i], log_hastings)
+    probability = _acceptance_probability(T, stored_logd, state.logdensities[i], log_hastings, scale)
     state.acceptance_probabilities[i] = probability
     state.accepted[i] = _uniform_at(acceptance_part, T, state.draw_buffers.slots[i]) < probability
     return nothing
@@ -538,7 +548,8 @@ function _evaluate!(state, move, streams, i, complement)
         state.accepted[i] = false
         return nothing
     end
-    return _evaluate_candidate!(state.batch_workspace, state, i, log_hastings, streams.acceptance)
+    return _evaluate_candidate!(state.batch_workspace, state, i, log_hastings,
+        streams.acceptance, _hastings_scale(move))
 end
 
 function _evaluate_group!(::SerialExecutor, state, move, streams, group, complement)
@@ -578,13 +589,13 @@ function _wait_tasks(tasks)
     return nothing
 end
 
-Base.@inline function _evaluate_candidate!(::Nothing, state, i, log_hastings, acceptance_part)
+Base.@inline function _evaluate_candidate!(::Nothing, state, i, log_hastings, acceptance_part, scale)
     logd = state.logdensity(state.candidates[i])
     logd isa Real || throw(ArgumentError(
         "Log density must return a real number, got $(typeof(logd)) for walker $i"))
-    return _accept_candidate!(state, i, log_hastings, logd, acceptance_part)
+    return _accept_candidate!(state, i, log_hastings, logd, acceptance_part, scale)
 end
-function _evaluate_candidate!(workspace::BatchWorkspace, state, i, log_hastings, acceptance_part)
+function _evaluate_candidate!(workspace::BatchWorkspace, state, i, log_hastings, acceptance_part, scale)
     workspace.log_hastings[i] = log_hastings
     state.accepted[i] = true # Marks a valid proposal until the batch is evaluated.
     return nothing
@@ -615,7 +626,8 @@ function _evaluate_batch!(workspace::BatchWorkspace, state, group, streams, move
     for i in group
         state.accepted[i] || continue
         k += 1
-        _accept_candidate!(state, i, workspace.log_hastings[i], values[k], streams.acceptance, true)
+        _accept_candidate!(state, i, workspace.log_hastings[i], values[k],
+            streams.acceptance, _hastings_scale(move), true)
     end
     return nothing
 end
@@ -687,7 +699,7 @@ function _sweep!(state, sweep, proposal_index)
         fitted_move = _prepare_group!(move, state, group, complement, streams)
         _evaluate_group!(state.executor, state, fitted_move, streams, group, complement)
         _evaluate_batch!(state.batch_workspace, state, group, streams, fitted_move)
-        _commit_group!(state, group, state.batch_workspace)
+        _commit_group!(state, group, state.batch_workspace, fitted_move)
     end
     state.active_index = idx
     state.attempts[idx] += length(state.positions)
@@ -697,7 +709,7 @@ function _sweep!(state, sweep, proposal_index)
     return state
 end
 
-function _commit_group!(state, group, workspace)
+function _commit_group!(state, group, workspace, move)
     for i in group
         if state.accepted[i]
             copyto!(state.positions[i], state.candidates[i])

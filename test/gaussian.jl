@@ -100,7 +100,7 @@
         distances = similar(points, length(group))
         work = similar(points, length(group), size(points, 1))
         EnsembleMCMC._gaussian_distances!(work, eachcol(points), group, fit, scale) do i, distance
-            distances[i] = distance
+            distances[i] = 2distance
         end
         return distances
     end

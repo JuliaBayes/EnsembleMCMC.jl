@@ -68,6 +68,8 @@ struct _FittedGaussianMove{M,S} <: AbstractEnsembleMove
     valid::Bool
 end
 
+# Half the log correction accommodates differences up to twice the largest finite target value.
+_hastings_scale(::_FittedGaussianMove) = Val(2)
 group_count(::_AllocatedGaussianMove) = 2
 _companion_lanes(::_AllocatedGaussianMove) = 0
 _scale_width(::_AllocatedGaussianMove, d) = d
@@ -224,8 +226,7 @@ function _gaussian_distances!(store!, work, positions, group, move, scale, H=elt
     end
     _gaussian_solve!(move.factor, work)
     for (j, i) in enumerate(group)
-        # The half-square can fit even when the full squared residual overflows.
-        store!(i, sum(x -> (H(x) / 2) * H(x), view(work, j, :)))
+        store!(i, sum(x -> abs2(H(x) / 2), view(work, j, :)))
     end
     return nothing
 end

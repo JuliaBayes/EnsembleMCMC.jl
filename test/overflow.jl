@@ -80,6 +80,22 @@ function test_proposal_overflow(device=identity; executor=SerialExecutor())
         end
     end
 
+    @testset "Opposing infinite terms in the Gaussian log ratio" begin
+        initial = [-1.0 1.0 -1.0 3.7e154]
+        for height in (1e308, 1.6e308)
+            shelf(x) = abs(x) < 10 ? height : -height
+            target = BatchedLogDensity(x -> shelf(only(x)), (v, x) -> (v .= shelf.(vec(x))))
+            state = initialize(Philox4x64(3), target, device(initial);
+                move=GaussianReplacementMove(), executor)
+            step!(state)
+            saved = snapshot(state)
+            x, y = BigFloat(initial[4]), BigFloat(only(Array(saved.candidates[4])))
+            logratio = 2BigFloat(height) + (y^2 - x^2) / 6
+            @test Array(saved.acceptance_probabilities)[4] == (logratio > 0)
+            @test Array(saved.accepted)[4] == (logratio > 0)
+        end
+    end
+
     @testset "Linear proposals across the coordinate range" begin
         # These seeds put walker i in the first group with difference a - b.
         for (initial, move, seed, i, a, b) in (

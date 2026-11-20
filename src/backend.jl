@@ -183,12 +183,12 @@ function _compact!(w::KernelWorkspace, slots)
     return nothing
 end
 
-function _commit_group!(state, group, w::KernelWorkspace)
+function _commit_group!(state, group, w::KernelWorkspace, move)
     n = w.host_status[1]
     n > 0 && _launch_kernel(w, _accept_commit_kernel!, 64, length(group), w.positions, w.candidates,
         state.logdensities, state.candidate_logdensities, state.accepted,
         state.acceptance_probabilities, w.invalid, w.controls, w.uniforms, w.indices, w.logh,
-        w.values, _kernel_scalar(w.execution, n))
+        w.values, _kernel_scalar(w.execution, n), _hastings_scale(move))
     return nothing
 end
 

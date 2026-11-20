@@ -223,6 +223,7 @@ KA.@kernel function _accept_commit_kernel!(
     logh,
     values,
     n,
+    scale,
 )
     k = @index(Global, Linear)
     if k <= n
@@ -235,7 +236,7 @@ KA.@kernel function _accept_commit_kernel!(
         @inbounds invalid[walker] = bad
         @inbounds candidate_logdensities[walker] = candidate_logdensity
         probability = _acceptance_probability(eltype(acceptance_probabilities), candidate_logdensity,
-            @inbounds(logdensities[walker]), @inbounds(logh[j]))
+            @inbounds(logdensities[walker]), @inbounds(logh[j]), scale)
         acceptance_probabilities[walker] = probability
         accept = !bad && @inbounds(uniforms[j]) < probability
         @inbounds accepted[walker] = accept

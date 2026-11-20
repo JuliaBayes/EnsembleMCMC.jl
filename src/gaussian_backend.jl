@@ -132,7 +132,7 @@ KA.@kernel function _propose_gaussian_kernel!(
             residual /= @inbounds factor[row, row]
             @inbounds scratch[row, j] = residual
             wide = convert(eltype(logh), residual)
-            current_distance += (wide / 2) * wide
+            current_distance += abs2(wide / 2)
         end
         for row in 1:dimension
             residual = @inbounds (candidates[row, walker] - anchor[row]) / scale - mean[row]
@@ -142,7 +142,7 @@ KA.@kernel function _propose_gaussian_kernel!(
             residual /= @inbounds factor[row, row]
             @inbounds scratch[row, j] = residual
             wide = convert(eltype(logh), residual)
-            candidate_distance += (wide / 2) * wide
+            candidate_distance += abs2(wide / 2)
         end
     end
     @inbounds accepted[walker] = false
