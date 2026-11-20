@@ -116,6 +116,15 @@ leaves the group unchanged. Repeated failures can stall the move.
 The proposal uses the independence-proposal Hastings correction, following the
 replacement move in [Goodman and Weare, equation (12)](https://msp.org/camcos/2010/5-1/camcos-v5-n1-p04-p.pdf).
 
+The Hastings correction evaluates the continuous Gaussian density at the stored
+coordinates. When the fitted spread covers only a few floating-point steps,
+rounding changes the proposal probabilities. Near ten million, adjacent
+`Float32` values are one unit apart. For a Gaussian with mean 10,000,000.25
+and standard deviation 0.5, the draw rounds to 10,000,001 about 0.484 times as
+often as to 10,000,000. The continuous density ratio is 0.368. For a narrow
+distribution far from zero, express the model in centered coordinates before
+converting to `Float32`, or store the walkers in `Float64`.
+
 ## Warmup and thinning
 
 `warmup` is the number of sweeps to discard before collecting samples. Its
