@@ -115,7 +115,7 @@ KA.@kernel function _propose_gaussian_kernel!(
         for column in 1:row
             offset += @inbounds factor[row, column] * scratch[column, j]
         end
-        proposal = @inbounds(anchor[row]) + scale * (@inbounds(mean[row]) + offset)
+        proposal = @inbounds _gaussian_position(anchor[row], scale[], mean[row] + offset)
         candidate = convert(eltype(positions), proposal)
         @inbounds candidates[row, walker] = candidate
         proposal_valid &= isfinite(candidate)

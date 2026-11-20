@@ -181,6 +181,11 @@ function _prepare_gaussian_group!(workspace, move, state, group, complement, str
     return _FittedGaussianMove(move, scale, valid)
 end
 
+@inline function _gaussian_position(anchor, scale, offset)
+    candidate = anchor + scale * offset
+    return isfinite(candidate) ? candidate : fma(scale, offset, anchor)
+end
+
 function _gaussian_proposals!(work, move, state, group, scale, streams)
     for (j, i) in enumerate(group)
         _normal_column!(streams.scale, state.draw_buffers.slots[i], view(work, j, :))
@@ -189,7 +194,7 @@ function _gaussian_proposals!(work, move, state, group, scale, streams)
     for (j, i) in enumerate(group)
         noise = view(work, j, :)
         candidate = state.candidates[i]
-        @. candidate = move.anchor + scale * (move.mean + noise)
+        @. candidate = _gaussian_position(move.anchor, scale, move.mean + noise)
     end
 
     # The independence correction uses the rounded candidate coordinates.
