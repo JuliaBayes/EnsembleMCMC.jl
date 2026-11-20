@@ -20,6 +20,16 @@ end
     end
 end
 
+@testset "Affine rank for a wide ensemble" begin
+    for (T, aspect) in ((Float32, 2f0^-16), (Float64, 2.0^-44), (BigFloat, 32 * eps(BigFloat)))
+        corners = T[-1 1 -1 1; -aspect -aspect aspect aspect]
+        positions = repeat(corners; outer=(1, 256))
+        @test_logs (:warn, r"nearly degenerate") validate_positions(positions)
+        positions[2, :] .= positions[1, :]
+        @test_throws ArgumentError validate_positions(positions)
+    end
+end
+
 @testset "Position validation across numeric scales" begin
     for positions in (
         reshape([-1e308, 1e308], 1, :),

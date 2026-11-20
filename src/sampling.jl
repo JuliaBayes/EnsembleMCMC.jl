@@ -252,13 +252,14 @@ positive, matching dimensions, finite real coordinates, and full affine rank.
 Return `nothing` without changing the input. Rank validation uses an owned host
 matrix of the positions relative to the first walker after uniform power-of-two
 rescaling. The working type `T` is the floating-point coordinate type, with
-`Float16` widened to `Float32`. Singular values at or
-below `max(d, n) * eps(T)` times the largest one count as zero, as in
-`LinearAlgebra.rank`. A full-rank ensemble whose
-smallest-to-largest singular value ratio is below `sqrt(eps(T))` gives a warning,
+`Float16` widened to `Float32`. For `d` coordinates and `n` walkers, the relative
+tolerance is `min(d, n) * eps(T)`, as in `LinearAlgebra.rank`. Singular values
+at or below that tolerance times the largest value count as zero. A full-rank
+ensemble whose smallest-to-largest ratio is below `sqrt(eps(T))` gives a warning,
 because linear moves then stay close to a lower-dimensional subspace.
-Types without an SVD, such as `BigFloat`, use the diagonal of a pivoted QR
-factorization as the singular value estimate.
+For wide matrices with small singular values, a pivoted QR factorization also
+checks rank. Types without an SVD, such as `BigFloat`, use the QR diagonal to
+estimate singular values.
 Call this after retry initialization, before synchronizing replacement positions.
 Move-specific walker requirements are checked by [`initialize`](@ref).
 """
@@ -271,23 +272,37 @@ function validate_positions(positions::AbstractVector)
     coordinate_type = float(_coordinate_type(positions))
     T = coordinate_type === Float16 ? Float32 : coordinate_type
     T <: AbstractFloat || throw(ArgumentError("Coordinates must be real floating-point values"))
-    centered = Matrix{T}(reduce(hcat, positions))
-    all(isfinite, centered) || throw(ArgumentError("Coordinates must be finite"))
-    # Bound centering and factorization without rounding normal significands.
-    _, exponent = frexp(maximum(abs, centered))
-    centered .= ldexp.(centered, -exponent)
-    centered .-= centered[:, 1]
+    centered = _centered_positions(positions, T)
     values = _singular_values(centered)
-    tolerance = max(size(centered)...) * eps(T) * first(values)
-    count(>(tolerance), values) == d || throw(ArgumentError("Walkers must have full affine rank"))
+    relative_tolerance = min(size(centered)...) * eps(T)
+    rank = count(>(relative_tolerance * first(values)), values)
+    if T <: LinearAlgebra.BlasFloat && rank == d &&
+        values[d] <= max(size(centered)...) * eps(T) * first(values)
+        # A wide SVD can overstate a small singular value. Pivoted QR on the
+        # original short columns checks whether the extra direction is resolved.
+        diagonal = _qr_diagonal!(_centered_positions(positions, T))
+        rank = count(>(relative_tolerance * first(diagonal)), diagonal)
+    end
+    rank == d || throw(ArgumentError("Walkers must have full affine rank"))
     ratio = values[d] / first(values)
     ratio < sqrt(eps(T)) && @warn string("Walkers are nearly degenerate: the singular value ratio ",
         Float64(ratio), " is below sqrt(eps($T)). Linear moves stay close to a subspace.")
     return nothing
 end
 
+function _centered_positions(positions, ::Type{T}) where {T}
+    centered = Matrix{T}(reduce(hcat, positions))
+    all(isfinite, centered) || throw(ArgumentError("Coordinates must be finite"))
+    # Bound centering and factorization without rounding normal significands.
+    _, exponent = frexp(maximum(abs, centered))
+    centered .= ldexp.(centered, -exponent)
+    centered .-= centered[:, 1]
+    return centered
+end
+
 _singular_values(x::Matrix{<:LinearAlgebra.BlasFloat}) = svdvals!(x)
-_singular_values(x) = sort!(abs.(diag(qr!(x, ColumnNorm()).R)); rev=true)
+_singular_values(x) = _qr_diagonal!(x)
+_qr_diagonal!(x) = sort!(abs.(diag(qr!(x, ColumnNorm()).R)); rev=true)
 
 function validate_positions(positions::AbstractMatrix)
     Base.require_one_based_indexing(positions)
