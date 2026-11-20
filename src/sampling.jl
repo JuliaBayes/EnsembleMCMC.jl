@@ -72,7 +72,9 @@ struct MoveMixture{M<:Tuple,W<:AbstractVector}
             Int.(weights)
         elseif schedule == :random
             values = _promoted_values(map(float, weights))
-            scaled = values ./ maximum(values)
+            # Selection draws and cumulative sums use the normalized weights' precision.
+            T = promote_type(Float64, eltype(values))
+            scaled = values ./ convert(T, maximum(values))
             scaled ./ sum(scaled)
         else
             throw(ArgumentError("Mixture schedule must be :random or :cycle"))

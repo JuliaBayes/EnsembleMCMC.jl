@@ -1,8 +1,24 @@
 using SparseArrays: sparse
 
+function test_narrow_mixture_weights(device, executor)
+    @testset "Small random mixture weights" begin
+        target = BatchedLogDensity(x -> 0.0, (v, x) -> fill!(v, 0.0))
+        for (weights, seed) in ((Float16[1, 2^-12], 2179), (Float16[2^-12, 1], 3056),
+                (Float16[2^-12, 1], 1252), (Float32[1, 2^-25], 42_759_292))
+            key = Philox4x64(seed)
+            u = rand_at(subrng(key, 0, 0, 1, 1), Float64, 1)
+            expected = u < first(weights) / sum(Float64, weights) ? 1 : 2
+            move = MoveMixture((StretchMove(), DEMove()), weights)
+            state = initialize(key, target, device([-1.0 0.0 1.0 2.0]); move, executor)
+            @test current_state(step!(state)).move_index == expected
+        end
+    end
+end
+
 function test_kernel_executor(device=copy)
     @testset "Kernel executor" begin
         test_proposal_overflow(device; executor=KernelExecutor())
+        test_narrow_mixture_weights(device, KernelExecutor())
         scalar(x::Vector) = -sum(abs2, x) / 2
         batch!(values, positions) = (values .= vec(-sum(abs2, positions; dims=1) / 2))
         target = BatchedLogDensity(scalar, batch!)
@@ -247,6 +263,7 @@ function test_kernel_executor(device=copy)
     end
 end
 
+test_narrow_mixture_weights(copy, SerialExecutor())
 test_kernel_executor()
 
 @testset "Sparse CPU kernel history" begin

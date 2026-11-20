@@ -104,7 +104,8 @@ must use device data during sampling.
 Proposals, log densities, acceptance flags, snapshots, and history stay on the
 input device. `Array(draws.positions)` explicitly copies the result to the CPU.
 The GPU generates the walker shuffle, move selection, proposal draws, and acceptance draws.
-For random move mixtures on a GPU, use weights that normalize to `Float16`, `Float32`, or `Float64`.
+For random move mixtures on a GPU, use weights that normalize to `Float64`.
+`Float16` and `Float32` weights are widened before normalization.
 Small status records and counts return to the CPU during sampling. Successful
 sweeps do not transfer coordinates or log densities back to the CPU.
 
