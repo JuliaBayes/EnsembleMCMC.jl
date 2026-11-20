@@ -58,8 +58,9 @@ julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.develop(path="."); Pkg.add(["C
 ```
 
 The tests use the current device. Call `CUDA.device!(i)` before the include to
-choose another one. The file exits without a functional GPU. The multi-device block
-is skipped with an `@info` if no second device can open a context.
+choose another one. The CUDA runner fails if a functional GPU is unavailable.
+The multi-device block is skipped with an `@info` if no second device can open a
+context.
 
 The Reactant backend has a separate GPU test entry point:
 

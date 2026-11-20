@@ -1,5 +1,3 @@
-using SparseArrays: sparse
-
 function test_narrow_mixture_weights(device, executor)
     @testset "Small random mixture weights" begin
         target = BatchedLogDensity(x -> 0.0, (v, x) -> fill!(v, 0.0))
@@ -264,23 +262,4 @@ function test_kernel_executor(device=copy)
             Array(indices)[1:count] == filter(i -> valid[i], slots)
         end
     end
-end
-
-test_narrow_mixture_weights(copy, SerialExecutor())
-test_kernel_executor()
-
-@testset "Sparse CPU kernel history" begin
-    initial = [1.0 -1.0 -1.0 1.0 0.0 0.0; 0.0 0.0 1.0 -1.0 2.0 -2.0]
-    density(x) = -sum(abs2, x) / 2
-    batch!(values, positions) = map!(density, values, eachcol(positions))
-    target = BatchedLogDensity(density, batch!)
-    key = Philox4x64(731)
-    dense = initialize(key, target, initial; executor=KernelExecutor())
-    compressed = initialize(key, target, sparse(initial); executor=KernelExecutor())
-    @test sample!(compressed, 5) == sample!(dense, 5)
-
-    address = Threefry4x64(92)
-    step!(compressed, address)
-    step!(dense, address)
-    @test snapshot(compressed) == snapshot(dense)
 end

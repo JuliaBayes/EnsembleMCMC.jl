@@ -3,6 +3,7 @@ using EnsembleMCMC: initialize, step!, sample!, current_state, snapshot, synchro
     validate_positions, acceptance_rate
 using LinearAlgebra
 using PureRNGs
+using SparseArrays: sparse
 using StaticArrays: SVector
 using Statistics
 using Test
@@ -282,6 +283,24 @@ include("batched.jl")
 include("overflow.jl")
 test_proposal_overflow()
 include("kernel.jl")
+test_narrow_mixture_weights(copy, SerialExecutor())
+test_kernel_executor()
+
+@testset "Sparse CPU kernel history" begin
+    initial = [1.0 -1.0 -1.0 1.0 0.0 0.0; 0.0 0.0 1.0 -1.0 2.0 -2.0]
+    density(x) = -sum(abs2, x) / 2
+    batch!(values, positions) = map!(density, values, eachcol(positions))
+    target = BatchedLogDensity(density, batch!)
+    key = Philox4x64(731)
+    dense = initialize(key, target, initial; executor=KernelExecutor())
+    compressed = initialize(key, target, sparse(initial); executor=KernelExecutor())
+    @test sample!(compressed, 5) == sample!(dense, 5)
+
+    address = Threefry4x64(92)
+    step!(compressed, address)
+    step!(dense, address)
+    @test snapshot(compressed) == snapshot(dense)
+end
 
 include("integration.jl")
 include("rng.jl")
