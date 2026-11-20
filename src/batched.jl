@@ -39,9 +39,9 @@ struct BatchWorkspace{T,L,H}
 end
 
 function _batch_capacity(target::BatchedLogDensity, n, moves, weights)
-    capacity = something(target.batch_size, n)
     required = maximum(cld(n, group_count(moves[i])) for i in eachindex(moves)
         if isnothing(weights) || weights[i] > 0)
+    capacity = something(target.batch_size, required)
     capacity >= required ||
         throw(ArgumentError("batch_size must fit the largest proposal group"))
     return capacity

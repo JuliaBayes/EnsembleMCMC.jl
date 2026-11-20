@@ -55,6 +55,28 @@
         end
     end
 
+    @testset "Batch storage fits odd proposal groups" begin
+        initial = reduce(hcat, initial_walkers()[1:13])
+        snooker = MoveMixture((StretchMove(), DESnookerMove()), (0, 1); schedule=:cycle)
+        for executor in (SerialExecutor(), KernelExecutor()),
+            (move, capacity) in ((StretchMove(), 7), (snooker, 4))
+            widths = Tuple{Int,Int}[]
+            function batch!(values, positions)
+                push!(widths, (size(positions, 2), size(parent(positions), 2)))
+                return map!(gaussian_logdensity, values, eachcol(positions))
+            end
+            variable = BatchedLogDensity(gaussian_logdensity, batch!)
+            padded = BatchedLogDensity(gaussian_logdensity, batch!; batch_size=capacity + 1)
+            actual = sample!(initialize(test_rng(), variable, initial; move, executor), 2)
+            @test maximum(first, widths) == capacity
+            @test all(w -> last(w) == capacity, widths)
+            empty!(widths)
+            expected = sample!(initialize(test_rng(), padded, initial; move, executor), 2)
+            @test all(==((capacity + 1, capacity + 1)), widths)
+            @test actual == expected
+        end
+    end
+
     @testset "Callback failure invalidates the state" begin
         initial = reduce(hcat, initial_walkers())
         failing_batch!(values, positions) = error("batch failed")
