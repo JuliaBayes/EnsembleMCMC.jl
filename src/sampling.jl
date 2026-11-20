@@ -821,7 +821,8 @@ function sample(
     kwargs...,
 )
     _check_sample_count(nsamples, thin)
-    0 <= warmup <= typemax(Int) - nsamples * thin ||
+    sample_sweeps = iszero(nsamples) ? 0 : Int(nsamples) * Int(thin)
+    0 <= warmup <= typemax(Int) - sample_sweeps ||
         throw(ArgumentError("Warmup must be nonnegative and the total sweep count must fit in Int"))
     state = initialize(rng, logdensity, initial; kwargs...)
     step!(state, warmup)

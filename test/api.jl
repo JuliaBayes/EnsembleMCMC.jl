@@ -26,6 +26,18 @@ error_of(f) = try f(); nothing; catch err; err; end
     @test_throws MethodError EnsembleMCMC.sample(gaussian_logdensity, initial, 2)
 end
 
+@testset "Narrow one-call sample counts" begin
+    initial = initial_walkers()[1:6]
+    reference = initialize(test_rng(), gaussian_logdensity, initial)
+    step!(reference, 3)
+    @test EnsembleMCMC.sample(test_rng(), gaussian_logdensity, initial, Int8(16);
+        warmup=Int8(3), thin=Int8(8)) == sample!(reference, 16; thin=8)
+    @test EnsembleMCMC.sample(test_rng(), gaussian_logdensity, initial, 0;
+        thin=big(typemax(Int)) + 1) == sample!(reference, 0)
+    @test_throws ArgumentError EnsembleMCMC.sample(test_rng(), gaussian_logdensity, initial, 1;
+        warmup=typemax(Int))
+end
+
 @testset "Move-aware walker counts" begin
     for move in (
         StretchMove(),
