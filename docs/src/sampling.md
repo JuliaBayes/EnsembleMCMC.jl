@@ -32,6 +32,11 @@ This is the smallest valid population, not a recommended sample size. More
 walkers provide more proposal partners, but each sweep costs more target
 evaluations. Compare the accuracy of the summaries you need at a fixed run time.
 
+With two walkers in one dimension, Stretch keeps their initial order in exact
+arithmetic. In the stationary law for that order, the two labels have the
+marginals of the smaller and larger of two target draws. Their equally weighted
+pool has the target marginal. Use at least three walkers to allow labels to pass.
+
 Start inside the target's support. A walker far outside the support may never
 recover because the moves use other walkers to construct proposals. The sampler
 warns about initial log densities of `-Inf` and nearly degenerate ensembles.
