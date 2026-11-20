@@ -3,7 +3,7 @@
 # The tests use the current device. Call `CUDA.device!(i)` before the include to choose another one.
 using CUDA, EnsembleMCMC, Test
 using MLDataDevices: CUDADevice
-using PureRNGs: Philox4x64, rand_next, randn_next, subrng
+using PureRNGs: Philox4x64, Threefry4x64, rand_next, randn_next, subrng
 using EnsembleMCMC: initialize, step!, sample!, current_state, snapshot, synchronize!
 test_rng() = CUDADevice()(Philox4x64(573))
 include("overflow.jl")

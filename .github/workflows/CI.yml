@@ -56,9 +56,9 @@ jobs:
           version: '1'
       - uses: julia-actions/cache@v3.3.0
       - uses: julia-actions/julia-buildpkg@v1
-      - uses: julia-actions/julia-runtest@v1
-        with:
-          coverage: true
+      # KernelAbstractions generates methods outside the package that execute sampler code.
+      - name: Run tests with coverage for generated kernels
+        run: julia --color=yes --project=. -e 'using Pkg; Pkg.test(coverage="user")'
       - uses: julia-actions/julia-processcoverage@v1
         with:
           directories: src

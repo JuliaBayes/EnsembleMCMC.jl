@@ -76,7 +76,8 @@ function test_kernel_executor(device=copy)
         state = initialize(test_rng(), target, device(initial);
             move=DEMove(), walker_ids=ids, executor=KernelExecutor())
         previous_logdensities = copy(current_state(reference).logdensities)
-        address = test_rng()
+        # A sweep key can use a different engine from the run key.
+        address = Threefry4x64(573)
         step!(reference, address; proposal_index=2)
         step!(state, address; proposal_index=2)
         transition = snapshot(state)

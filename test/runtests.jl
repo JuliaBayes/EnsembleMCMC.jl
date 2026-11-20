@@ -142,6 +142,10 @@ end
         float_weights = initialize(test_rng(), gaussian_logdensity, initial_walkers();
             move=MoveMixture(moves, [7.0, 3.0]; schedule=:random))
         @test sample!(integer_weights, 12) == sample!(float_weights, 12)
+        # Float16 summation rounds down near the last positive weight.
+        rounded = MoveMixture(fill(StretchMove(), 18), [ones(Float16, 17); 0])
+        @test EnsembleMCMC.sample(Philox4x64(13), gaussian_logdensity, initial_walkers(), 1;
+            move=rounded).move_indices == [17]
         float_cycle = initialize(test_rng(), gaussian_logdensity, initial_walkers();
             move=MoveMixture(moves, [2.0, 1.0]; schedule=:cycle))
         @test sample!(float_cycle, 9) == draws

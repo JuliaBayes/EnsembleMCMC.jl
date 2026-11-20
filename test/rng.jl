@@ -79,13 +79,16 @@ end
     setprecision(BigFloat, 192) do
         key = Philox2x32(83)
         initial = reshape(BigFloat[-3, -1, 1, 3], 1, :)
-        state = initialize(key, gaussian_logdensity, initial; move=GaussianReplacementMove(shrinkage=0))
-        step!(state, key)
-        # Walkers 1 and 4 update first. Their complement {-1, 1} has mean 0 and variance 2.
-        for id in (1, 4)
-            rng = StatefulRNG(subrng(key, 6, 1, id))
-            expected = sqrt(BigFloat(2)) * randn(rng, BigFloat)
-            @test only(current_state(state).candidates[id]) ≈ expected rtol=8eps(BigFloat)
+        batched = BatchedLogDensity(gaussian_logdensity, (v, x) -> map!(gaussian_logdensity, v, eachcol(x)))
+        for (target, executor) in ((gaussian_logdensity, SerialExecutor()), (batched, KernelExecutor()))
+            state = initialize(key, target, initial; move=GaussianReplacementMove(shrinkage=0), executor)
+            step!(state, key)
+            # Walkers 1 and 4 update first. Their complement {-1, 1} has mean 0 and variance 2.
+            for id in (1, 4)
+                rng = StatefulRNG(subrng(key, 6, 1, id))
+                expected = sqrt(BigFloat(2)) * randn(rng, BigFloat)
+                @test only(current_state(state).candidates[id]) ≈ expected rtol=8eps(BigFloat)
+            end
         end
     end
 end
