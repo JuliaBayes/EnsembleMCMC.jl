@@ -203,10 +203,10 @@ function EnsembleMCMC._gaussian_cholesky!(factor::Reactant.TracedRArray, thresho
     # Reactant's cholesky! wrapper allocates upper factors. The move needs an
     # in-place lower factor and a validity flag, which this device operation supplies.
     finite = all(isfinite, factor)
-    isnothing(thresholds) || (thresholds .= tolerance .* sqrt.(diag(factor)))
+    limits = isnothing(thresholds) ? nothing : tolerance .* sqrt.(diag(factor))
     factor .= tril(Reactant.Ops.cholesky(factor; lower = true))
     pivots = diag(factor)
-    valid = isnothing(thresholds) ? all(>(0), pivots) : all(pivots .> thresholds)
+    valid = isnothing(limits) ? all(>(0), pivots) : all(pivots .> limits)
     return finite & all(isfinite, factor) & valid
 end
 

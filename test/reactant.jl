@@ -33,6 +33,22 @@ end
     end
 end
 
+@testset "One-dimensional Reactant Gaussian fit" begin
+    initial = [-1.0 1 -1 4]
+    scalar(x) = -abs2(only(x)) / 2
+    points = Reactant.to_rarray(initial)
+    compiled = Reactant.Compiler.compile(batch_normal!, (similar(points, 2), similar(points, 1, 2)))
+    target = BatchedLogDensity(scalar, compiled; batch_size = 2)
+    for s in (:auto, 0, 0.5)
+        move = GaussianReplacementMove(shrinkage = s)
+        device = initialize(Philox4x64(3), target, points; move, executor = KernelExecutor())
+        host = initialize(Philox4x64(3), scalar, initial; move)
+        step!(device)
+        step!(host)
+        @test Array(current_state(device).acceptance_probabilities) ≈ current_state(host).acceptance_probabilities
+    end
+end
+
 @testset "Reactant transitions and retained history" begin
     scalar(x) = -sum(abs2, x) / 2
     initial = first(randn_next(Philox4x64(42), 2, 13))
