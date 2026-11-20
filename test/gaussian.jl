@@ -147,6 +147,24 @@
         @test fit(:auto).valid
     end
 
+    @testset "Gaussian pivots on a strided covariance view" begin
+        # The second coordinate has marginal standard deviation 2.5u and
+        # conditional standard deviation 2u. Its relative pivot is exactly 4/5.
+        u = 2.0^20
+        covariance = [4.0 3u; 3u 6.25u^2]
+        storage = zeros(3, 3)
+        factor = view(storage, 1:2, 1:2)
+        limits = zeros(2)
+        for (tolerance, resolved) in ((0.75, true), (0.875, false))
+            copyto!(factor, covariance)
+            @test EnsembleMCMC._gaussian_cholesky!(factor, limits, tolerance) == resolved
+            @test limits == tolerance .* [2.0, 2.5u]
+            @test diag(factor) == [2.0, 2u]
+        end
+        factor[2, 2] = Inf
+        @test !EnsembleMCMC._gaussian_pivots_resolved(factor, limits)
+    end
+
     @testset "Rank of the frozen covariance in coordinate units" begin
         # The first complementary group is columns [2, 4, 1].
         group = [5, 6, 3]
