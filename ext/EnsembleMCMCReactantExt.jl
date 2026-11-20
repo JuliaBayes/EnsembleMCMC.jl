@@ -51,6 +51,14 @@ end
 
 _copyto!(dest, src) = (dest .= reshape(src, size(dest)))
 
+function _copyto!(dest::SubArray{T,1,<:AbstractMatrix,<:Tuple{Base.Slice,Int}}, src) where {T}
+    # Reactant can lower a singleton view broadcast to a CartesianIndex-based linear update.
+    # Assign the full column through its matrix so the update stays two-dimensional.
+    column = last(parentindices(dest))
+    parent(dest)[:, column:column] = reshape(src, length(dest), 1)
+    return nothing
+end
+
 function EnsembleMCMC._kernel_copyto!(dest::Reactant.AnyConcretePJRTArray, src)
     source = Array{eltype(dest)}(src)
     compiled = Reactant.Compiler.compile(

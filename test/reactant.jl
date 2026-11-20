@@ -163,3 +163,25 @@ function prepare_mixture_batch(batch!, points, width)
 end
 
 test_keyed_kernel_mixture(Reactant.to_rarray, prepare_mixture_batch)
+
+@testset "Reactant one-coordinate synchronization" begin
+    scalar(x) = -sum(abs2, Float64.(x)) / 2
+    target = BatchedLogDensity(scalar, batch_normal!; batch_size=2)
+    for T in (Float16, Float64)
+        initial = T[1.5 -0.5 0.75 -0.75]
+        replacement = initial[:, [3, 1, 4, 2]]
+        values = map(scalar, eachcol(replacement))
+        supplied = T === Float16 ? values : Reactant.to_rarray(values)
+        state = initialize(Philox4x64(5), target, Reactant.to_rarray(initial);
+            executor=KernelExecutor())
+        before = current_state(state)
+        @test synchronize!(state, Reactant.to_rarray(replacement), supplied) === state
+        restored = current_state(state)
+        @test restored.positions === before.positions
+        @test reduce(hcat, Array.(restored.positions)) == replacement
+        @test reduce(hcat, Array.(restored.candidates)) == replacement
+        @test Array(restored.logdensities) == values
+        synchronize!(state, restored.positions, restored.logdensities)
+        @test reduce(hcat, Array.(snapshot(state).positions)) == replacement
+    end
+end
