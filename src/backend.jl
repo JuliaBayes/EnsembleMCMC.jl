@@ -6,7 +6,7 @@ struct KernelWorkspace{P,L,V,I,C,F,A,S,E}
     logh::V
     indices::I
     controls::C
-    factors::F
+    uniforms::F
     valid::A
     invalid::A
     status::S
@@ -67,13 +67,13 @@ function _initialize_kernel(rng, target, initial; logdensities=nothing, kwargs..
         copyto!(logds, host.logdensities)
         accepted = similar(initial, Bool, n)
         _kernel_fill!(accepted, false)
-        probabilities = similar(initial, T, n)
+        probabilities = similar(initial, _acceptance_type(T, L), n)
         _kernel_fill!(probabilities, 0)
         status = similar(initial, Int, 3)
         _kernel_fill!(status, 0)
         workspace = KernelWorkspace(positions, candidates, similar(positions, d, capacity),
             similar(logds, capacity), similar(initial, T, n), similar(initial, Int, n),
-            similar(initial, Int, 4, n), similar(initial, T, 2, n),
+            similar(initial, Int, 4, n), similar(probabilities),
             similar(accepted), copy(accepted), status,
             _kernel_vector(initial, host.walker_ids), similar(initial, Int, n),
             zeros(Int, 3), _kernel_execution(positions))
@@ -96,7 +96,7 @@ function _step!(state, workspace::KernelWorkspace, sweep, proposal_index)
             # A callback can enqueue device work before throwing.
             _kernel_synchronize(workspace.positions, workspace.candidates,
                 workspace.batchpositions, workspace.values, workspace.logh,
-                workspace.indices, workspace.controls, workspace.factors,
+                workspace.indices, workspace.controls, workspace.uniforms,
                 workspace.valid, workspace.invalid, workspace.status,
                 state.logdensities, state.candidate_logdensities,
                 state.accepted, state.acceptance_probabilities)
@@ -108,7 +108,7 @@ end
 
 _synchronize_move(move) = nothing
 
-KA.@kernel function _snooker_controls_kernel!(controls, factors, permutation, walker_ids,
+KA.@kernel function _snooker_controls_kernel!(controls, uniforms, permutation, walker_ids,
     groups, move, keys)
     j = @index(Global, Linear)
     walker = permutation[j]
@@ -121,7 +121,7 @@ KA.@kernel function _snooker_controls_kernel!(controls, factors, permutation, wa
     r, a, b = _proposal_parameters(move, groups, (; streams..., words=nothing, ids=nothing), id, active)
     controls[1, j] = walker
     controls[2, j], controls[3, j], controls[4, j] = permutation[r], permutation[a], permutation[b]
-    factors[2, j] = _uniform_at(streams.acceptance, eltype(factors), id)
+    uniforms[j] = _uniform_at(streams.acceptance, eltype(uniforms), id)
 end
 
 function _evaluate_group!(::KernelExecutor, state, move::DESnookerMove, streams, group, complement)
@@ -142,7 +142,7 @@ function _evaluate_group!(::KernelExecutor, state, move::Union{StretchMove,DEMov
     kernel, threads, count = size(w.positions, 1) >= 32 && isbitstype(eltype(w.positions)) ?
         (_draw_wide_linear_batch_kernel!, 32, 32 * width) : (_draw_linear_batch_kernel!, 64, width)
     _launch_kernel(w, kernel, threads, count, w.candidates, w.positions,
-        w.batchpositions, w.values, w.controls, w.factors, w.logh, w.indices, state.accepted,
+        w.batchpositions, w.values, w.controls, w.uniforms, w.logh, w.indices, state.accepted,
         w.permutation, w.walker_ids, group, complement, move, keys)
     w.host_status[1] = n
     return nothing
@@ -182,7 +182,7 @@ function _commit_group!(state, group, w::KernelWorkspace)
     n = w.host_status[1]
     n > 0 && _launch_kernel(w, _accept_commit_kernel!, 64, length(group), w.positions, w.candidates,
         state.logdensities, state.candidate_logdensities, state.accepted,
-        state.acceptance_probabilities, w.invalid, w.controls, w.factors, w.indices, w.logh,
+        state.acceptance_probabilities, w.invalid, w.controls, w.uniforms, w.indices, w.logh,
         w.values, _kernel_scalar(w.execution, n))
     return nothing
 end

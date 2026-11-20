@@ -23,7 +23,7 @@ end
     return walker, permutation[first], permutation[second], scale, zero(scale)
 end
 
-@inline function _draw_linear_walker!(values, controls, factors, logh, indices, accepted,
+@inline function _draw_linear_walker!(values, controls, uniforms, logh, indices, accepted,
     permutation, walker_ids, group, complement, move, keys, k, dimension)
     # Fixed-width callbacks repeat the first candidate in all padded columns.
     j = k <= length(group) ? k : 1
@@ -35,7 +35,7 @@ end
     values[k] = Inf
     if k == j
         controls[1, j] = walker
-        factors[2, j] = _uniform_at(streams.acceptance, eltype(factors), id)
+        uniforms[j] = _uniform_at(streams.acceptance, eltype(uniforms), id)
         logh[j] = correction
         indices[j] = j
         accepted[walker] = false
@@ -57,9 +57,9 @@ end
 end
 
 KA.@kernel function _draw_linear_batch_kernel!(candidates, positions, batchpositions, values,
-    controls, factors, logh, indices, accepted, permutation, walker_ids, group, complement, move, keys)
+    controls, uniforms, logh, indices, accepted, permutation, walker_ids, group, complement, move, keys)
     k = @index(Global, Linear)
-    draw = _draw_linear_walker!(values, controls, factors, logh, indices, accepted,
+    draw = _draw_linear_walker!(values, controls, uniforms, logh, indices, accepted,
         permutation, walker_ids, group, complement, move, keys, k, size(positions, 1))
     _write_linear_coordinates!(candidates, positions, batchpositions, draw,
         k, length(group), axes(positions, 1))
@@ -67,11 +67,11 @@ end
 
 # A workgroup shares one draw while its lanes traverse contiguous coordinates.
 KA.@kernel function _draw_wide_linear_batch_kernel!(candidates, positions, batchpositions, values,
-    controls, factors, logh, indices, accepted, permutation, walker_ids, group, complement, move, keys)
+    controls, uniforms, logh, indices, accepted, permutation, walker_ids, group, complement, move, keys)
     draw = @localmem Tuple{Int,Int,Int,Int,eltype(positions)} (1,)
     if isone(@index(Local, Linear))
         k = @index(Group, Linear)
-        draw[1] = _draw_linear_walker!(values, controls, factors, logh, indices, accepted,
+        draw[1] = _draw_linear_walker!(values, controls, uniforms, logh, indices, accepted,
             permutation, walker_ids, group, complement, move, keys, k, size(positions, 1))
     end
     @synchronize
@@ -218,7 +218,7 @@ KA.@kernel function _accept_commit_kernel!(
     acceptance_probabilities,
     invalid,
     controls,
-    factors,
+    uniforms,
     indices,
     logh,
     values,
@@ -234,14 +234,10 @@ KA.@kernel function _accept_commit_kernel!(
         bad = candidate_logdensity == Inf
         @inbounds invalid[walker] = bad
         @inbounds candidate_logdensities[walker] = candidate_logdensity
-        T = eltype(positions)
-        logratio = convert(
-            T,
-            (candidate_logdensity - @inbounds(logdensities[walker])) + @inbounds(logh[j])
-        )
-        probability = isnan(logratio) ? zero(T) : clamp(exp(logratio), zero(T), one(T))
+        probability = _acceptance_probability(eltype(acceptance_probabilities), candidate_logdensity,
+            @inbounds(logdensities[walker]), @inbounds(logh[j]))
         acceptance_probabilities[walker] = probability
-        accept = !bad && @inbounds(factors[2, j]) < probability
+        accept = !bad && @inbounds(uniforms[j]) < probability
         @inbounds accepted[walker] = accept
         if accept
             for coordinate = 1:size(positions, 1)

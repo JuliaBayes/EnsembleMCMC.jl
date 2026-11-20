@@ -33,7 +33,7 @@ function _evaluate_group!(::KernelExecutor, state, fitted::_FittedGaussianMove,
     end
 
     _launch_kernel(w, _draw_gaussian_kernel!, 64, n, move.scratch, w.controls,
-        w.factors, w.permutation, w.walker_ids, group, streams)
+        w.uniforms, w.permutation, w.walker_ids, group, streams)
     _launch_kernel(w, _propose_gaussian_kernel!, 64, n, w.candidates, w.positions, w.controls,
         w.logh, w.valid, state.accepted, state.candidate_logdensities,
         state.logdensities, state.acceptance_probabilities, move.anchor, move.mean, move.factor,
@@ -64,14 +64,14 @@ function _device_normal_column!(scratch::AbstractMatrix{T}, j, key, id) where {T
 end
 _device_normal_column!(scratch, j, key, id) = _normal_column!(key, id, view(scratch, :, j))
 
-KA.@kernel function _draw_gaussian_kernel!(scratch, controls, factors, permutation, walker_ids,
+KA.@kernel function _draw_gaussian_kernel!(scratch, controls, uniforms, permutation, walker_ids,
     group, keys)
     j = @index(Global, Linear)
     walker = permutation[group[j]]
     id = walker_ids[walker]
     streams = _device_streams(keys)
     controls[1, j] = walker
-    factors[2, j] = _uniform_at(streams.acceptance, eltype(factors), id)
+    uniforms[j] = _uniform_at(streams.acceptance, eltype(uniforms), id)
     _device_normal_column!(scratch, j, streams.scale, id)
 end
 

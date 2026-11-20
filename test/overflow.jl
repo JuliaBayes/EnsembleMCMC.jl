@@ -1,4 +1,40 @@
+using PureRNGs: rand_at
+
+
 function test_proposal_overflow(device=identity; executor=SerialExecutor())
+    @testset "Rare transitions with Float16 coordinates" begin
+        key = Philox4x64(45)
+        acceptance = subrng(key, 3, 1)
+        # At the first address the Float16 uniform is zero. At the second the Float32
+        # uniform is zero. In both cases the Float64 draw exceeds the shelf probability.
+        for (ids, logp) in (([1, 2], -12.0), ([7267203, 2], -20.0))
+            shelf(x) = abs(x) > 5 ? -Inf : abs(x) == 1 ? 0.0 : logp
+            target = BatchedLogDensity(x -> shelf(only(x)), (v, x) -> (v .= shelf.(vec(x))))
+            state = initialize(key, target, device(Float16[-1 1]); executor, walker_ids=ids)
+            step!(state, key)
+            saved = current_state(state)
+            @test Array(saved.candidate_logdensities)[1] == logp
+            @test Array(saved.acceptance_probabilities)[1] ≈ exp(logp) rtol=2eps(Float64)
+            @test Array(saved.accepted)[1] == (rand_at(acceptance, Float64, ids[1]) < exp(logp))
+        end
+    end
+
+    @testset "Density difference with a wider Hastings correction" begin
+        x = 1e20
+        shelf(z) = abs(z) > 2x ? -Inf32 : abs(z) > x/10 ? -floatmax(Float32) : floatmax(Float32)
+        target = BatchedLogDensity(z -> shelf(only(z)), (v, z) -> (v .= shelf.(vec(z))))
+        state = initialize(Philox4x64(3), target, device([-1.0 1.0 -1.0 x]);
+            move=GaussianReplacementMove(), executor)
+        step!(state)
+        saved = current_state(state)
+        y = only(Array(saved.candidates[4]))
+        # Walker 4's complement has mean zero and inflated proposal variance 3.
+        ratio = Float64(shelf(y)) - Float64(shelf(x)) + (y^2 - x^2)/6
+        @test ratio < 0 && isinf(shelf(y) - shelf(x))
+        @test Array(saved.acceptance_probabilities)[4] == exp(ratio)
+        @test !Array(saved.accepted)[4]
+    end
+
     @testset "Gaussian half-quadratic overflow" begin
         initial = Float32[-1 1 -1 3.3f19]
         # The full quadratic overflows although half of it fits.

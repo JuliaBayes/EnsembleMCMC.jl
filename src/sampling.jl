@@ -291,10 +291,12 @@ function initialize(
     moves = map(m -> _allocate_move(m, positions), prepared.moves)
     d, n = length(first(positions)), length(positions)
     T = eltype(first(positions))
+    A = _acceptance_type(T, eltype(logdensities))
     return EnsembleState(logdensity, moves, weights, executor, _cpu_rng(rng), walker_ids, walker_order,
-        _draw_buffers(T, walker_ids, d, moves),
+        _draw_buffers(T, A, walker_ids, d, moves),
         positions, deepcopy(positions), logdensities, copy(logdensities),
-        _batch_workspace(logdensity, positions, logdensities, moves, weights), fill(false, n), zeros(T, n),
+        _batch_workspace(logdensity, positions, logdensities, moves, weights),
+        fill(false, n), zeros(A, n),
         zeros(Int, length(moves)), zeros(Int, length(moves)), 0, 0, true)
 end
 
@@ -363,6 +365,15 @@ function _warn_negative_infinity(logds)
     return nothing
 end
 
+# Float16 uniforms have only 2,048 possible values, including zero.
+_acceptance_type(T, L) = promote_type(Float32, T, L)
+
+@inline function _acceptance_probability(::Type{T}, proposed, current, log_hastings) where {T}
+    L = promote_type(T, typeof(log_hastings))
+    ratio = convert(T, (convert(L, proposed) - current) + log_hastings)
+    return isnan(ratio) ? zero(T) : clamp(exp(ratio), zero(T), one(T))
+end
+
 Base.@inline function _accept_candidate!(state, i, log_hastings, logd, acceptance_part, batched=false)
     stored_logd = convert(eltype(state.logdensities), logd)
     if isnan(stored_logd)
@@ -371,9 +382,8 @@ Base.@inline function _accept_candidate!(state, i, log_hastings, logd, acceptanc
         _invalid_candidate(state, i, stored_logd, batched)
     end
     state.candidate_logdensities[i] = stored_logd
-    T = eltype(state.positions[i])
-    logratio = convert(T, (stored_logd - state.logdensities[i]) + log_hastings)
-    probability = isnan(logratio) ? zero(T) : clamp(exp(logratio), zero(T), one(T))
+    T = eltype(state.acceptance_probabilities)
+    probability = _acceptance_probability(T, stored_logd, state.logdensities[i], log_hastings)
     state.acceptance_probabilities[i] = probability
     state.accepted[i] = _uniform_at(acceptance_part, T, state.draw_buffers.slots[i]) < probability
     return nothing
@@ -411,18 +421,19 @@ function _weighted_move(weights::AbstractVector{T}, u) where {T}
     return last_positive
 end
 
-function _draw_buffers(::Type{T}, ids, d, moves) where {T}
+function _draw_buffers(::Type{T}, ::Type{A}, ids, d, moves) where {T,A}
     n = length(ids)
-    sparse_ids = T <: _HardwareFloat && maximum(ids) != n ? ids : nothing
+    buffered = T <: _HardwareFloat && A <: _HardwareFloat
+    sparse_ids = buffered && maximum(ids) != n ? ids : nothing
     # A sparse buffer uses one slot per stored walker. Its draw still uses the original ID.
     slots = isnothing(sparse_ids) ? ids : eachindex(ids)
-    lanes = T <: _HardwareFloat ? max(1, maximum(_companion_lanes, moves)) : 1
+    lanes = buffered ? max(1, maximum(_companion_lanes, moves)) : 1
     words = Vector{UInt64}(undef, Base.checked_mul(n, lanes))
-    floats = if T <: _HardwareFloat
+    floats = if buffered
         width = maximum(move -> _scale_width(move, d), moves)
         block = isnothing(sparse_ids) ? nothing : Val(min(width, _NORMAL_BLOCK_SIZE))
-        (scale=Vector{T}(undef, Base.checked_mul(n, width)), acceptance=Vector{T}(undef, n),
-            ids=sparse_ids, block=block)
+        (scale=Vector{T}(undef, Base.checked_mul(n, width)),
+            acceptance=Vector{A}(undef, n), ids=sparse_ids, block=block)
     end
     return (; permutation=similar(ids), words, floats, slots)
 end

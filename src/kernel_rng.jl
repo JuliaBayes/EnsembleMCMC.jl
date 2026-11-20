@@ -204,7 +204,7 @@ function _sweep_inputs(state, w::KernelWorkspace, sweep_key, proposal_index)
     move = state.moves[idx]
     if move isa DESnookerMove
         # Partners depend only on the permutation. Geometry still uses each group's updated complement.
-        _launch_kernel(w, _snooker_controls_kernel!, 64, n, w.controls, w.factors,
+        _launch_kernel(w, _snooker_controls_kernel!, 64, n, w.controls, w.uniforms,
             w.permutation, w.walker_ids, groups, move, purposes)
     end
     return idx, groups, purposes
