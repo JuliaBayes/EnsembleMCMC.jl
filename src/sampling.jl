@@ -440,7 +440,7 @@ end
 end
 
 _select_move(::Nothing, rng, step) = 1
-function _select_move(weights::Vector{Int}, rng, step)
+function _select_move(weights::AbstractVector{Int}, rng, step)
     offset = mod1(step, sum(weights))
     total = 0
     for i in eachindex(weights)

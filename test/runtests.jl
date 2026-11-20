@@ -3,6 +3,7 @@ using EnsembleMCMC: initialize, step!, sample!, current_state, snapshot, synchro
     validate_positions, acceptance_rate
 using LinearAlgebra
 using PureRNGs
+using StaticArrays: SVector
 using Statistics
 using Test
 
@@ -164,6 +165,14 @@ end
         float_cycle = initialize(test_rng(), gaussian_logdensity, initial_walkers();
             move=MoveMixture(moves, [2.0, 1.0]; schedule=:cycle))
         @test sample!(float_cycle, 9) == draws
+
+        points = reduce(hcat, initial_walkers())
+        target = BatchedLogDensity(gaussian_logdensity, (v, x) -> map!(gaussian_logdensity, v, eachcol(x)))
+        for executor in (SerialExecutor(), KernelExecutor())
+            move = MoveMixture(moves, SVector(2, 1); schedule=:cycle)
+            state = initialize(test_rng(), target, points; move, executor)
+            @test sample!(state, 6).move_indices == [1, 1, 2, 1, 1, 2]
+        end
     end
 
     @testset "Cached densities and degenerate snooker geometry" begin
