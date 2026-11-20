@@ -60,18 +60,13 @@ column views. Walker IDs, move indices, and counters are on the host.
 ## Supply an external RNG address
 
 `step!(state, sweep_key; proposal_index=1)` uses a host-supplied PureRNGs key
-for one sweep. Derive a distinct key for each sweep with `subrng`. The key's
-generator type must match the initialization generator.
+for one sweep. Derive a distinct key for each sweep with `subrng`. The sampler
+places the key on the ensemble's execution device as needed.
 
 Inner mixture selection uses purpose 2, leaving purpose 1 for an outer mixture.
 This address replaces the normal step address for that sweep. The sweep count
 and mixture phase still advance, so a later `step!(state)` uses the next normal
 address.
-
-Existing adapters such as BAT can load Random123 to keep passing `Philox4x` or
-`Threefry4x` with `UInt64` counters to `initialize` and addressed `step!`. The
-extension derives keys from the partition address and leaves the supplied RNG
-untouched. The existing partition limits still apply. See [`step!`](@ref).
 
 ## Interface guarantees
 

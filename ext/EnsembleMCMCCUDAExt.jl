@@ -2,6 +2,10 @@ module EnsembleMCMCCUDAExt
 
 import CUDA
 import EnsembleMCMC
+import PureRNGs
+
+EnsembleMCMC._kernel_rng(::CUDA.AnyCuArray, key::PureRNGs.AbstractPureRNG) =
+    PureRNGs.MLDataDevices.CUDADevice()(key)
 
 EnsembleMCMC._check_kernel_array(initial::CUDA.AnyCuArray) =
     CUDA.functional() || throw(ArgumentError("CUDA is not functional"))

@@ -3,13 +3,11 @@ using EnsembleMCMC: initialize, step!, sample!, current_state, snapshot, synchro
     validate_positions, acceptance_rate
 using LinearAlgebra
 using PureRNGs
-using Random
-using Random123
 using Statistics
 using Test
 
 gaussian_logdensity(x) = -sum(abs2, x) / 2
-initial_walkers() = [randn(Philox4x((731, i)), 2) for i in 1:24]
+initial_walkers() = [first(randn_next(Philox4x64(UInt64.((731, i))), 2)) for i in 1:24]
 test_rng() = Philox4x64(573)
 
 # Integrated autocorrelation time with Sokal's adaptive window (c = 5).
@@ -144,6 +142,10 @@ end
         float_weights = initialize(test_rng(), gaussian_logdensity, initial_walkers();
             move=MoveMixture(moves, [7.0, 3.0]; schedule=:random))
         @test sample!(integer_weights, 12) == sample!(float_weights, 12)
+        # Float16 summation rounds down near the last positive weight.
+        rounded = MoveMixture(fill(StretchMove(), 18), [ones(Float16, 17); 0])
+        @test EnsembleMCMC.sample(Philox4x64(13), gaussian_logdensity, initial_walkers(), 1;
+            move=rounded).move_indices == [17]
         float_cycle = initialize(test_rng(), gaussian_logdensity, initial_walkers();
             move=MoveMixture(moves, [2.0, 1.0]; schedule=:cycle))
         @test sample!(float_cycle, 9) == draws

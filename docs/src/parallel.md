@@ -10,10 +10,11 @@ Start Julia with several threads, for example `julia --threads=4`, and pass
 `executor=ThreadedExecutor()`:
 
 ```jldoctest threaded
-using EnsembleMCMC, Random
+using EnsembleMCMC
+using PureRNGs: Philox4x64, randn_next, subrng
 
-rng = Xoshiro(42);
-initial = randn(rng, 2, 24);
+rng = Philox4x64(42);
+initial = first(randn_next(subrng(rng, 1), 2, 24));
 draws = EnsembleMCMC.sample(rng, x -> -sum(abs2, x) / 2, initial, 10;
     executor=ThreadedExecutor());
 size(draws.positions)
@@ -38,13 +39,14 @@ Some targets can evaluate several points more efficiently together. Wrap the
 scalar function and an in-place batch function in `BatchedLogDensity`:
 
 ```jldoctest batched
-using EnsembleMCMC, Random
+using EnsembleMCMC
+using PureRNGs: Philox4x64
 
 scalar(x) = -sum(abs2, x) / 2;
 batch!(values, positions) = (values .= scalar.(eachcol(positions)));
 target = BatchedLogDensity(scalar, batch!);
 initial = [-1.0 0 1 0; 0 -1 0 1];
-draws = EnsembleMCMC.sample(Xoshiro(42), target, initial, 10);
+draws = EnsembleMCMC.sample(Philox4x64(42), target, initial, 10);
 size(draws.positions)
 
 # output
@@ -74,15 +76,18 @@ stays on the CPU with either `SerialExecutor` or `ThreadedExecutor`.
 
 ## CUDA
 
-Add CUDA to the environment. Pass a device matrix, a device batch function, and
-`KernelExecutor()` to keep proposals and samples on the GPU:
+Add CUDA and MLDataDevices to the environment. Bind a PureRNGs key with
+`CUDADevice()` to draw the initial walkers on the GPU. Pass `KernelExecutor()`
+and a device batch function to sample there.
 
 ```julia
-using CUDA, EnsembleMCMC, Random
+using CUDA, EnsembleMCMC
+using MLDataDevices: CUDADevice
+using PureRNGs: Philox4x64, randn_next, subrng
 
 CUDA.allowscalar(false)
-rng = Xoshiro(42)
-initial = CuArray(randn(rng, Float32, 8, 32))
+rng = CUDADevice()(Philox4x64(42))
+initial = first(randn_next(subrng(rng, 1), Float32, 8, 32))
 scalar(x) = -sum(abs2, x) / 2
 batch!(values, positions) = (values .= vec(-sum(abs2, positions; dims=1) / 2))
 target = BatchedLogDensity(scalar, batch!)
@@ -98,7 +103,8 @@ must use device data during sampling.
 
 Proposals, log densities, acceptance flags, snapshots, and history stay on the
 input device. `Array(draws.positions)` explicitly copies the result to the CPU.
-The RNG generates proposal controls on the CPU and transfers them to the device.
+The GPU generates the walker shuffle, move selection, proposal draws, and acceptance draws.
+For random move mixtures on a GPU, use weights that normalize to `Float16`, `Float32`, or `Float64`.
 Small status records and counts return to the CPU during sampling. Successful
 sweeps do not transfer coordinates or log densities back to the CPU.
 
@@ -121,11 +127,14 @@ Load both Reactant and CUDA to use a single-device PJRT array on a CUDA GPU with
 `KernelExecutor`. Compile the density once for a fixed batch width:
 
 ```julia
-using Reactant, CUDA, EnsembleMCMC, Random
+using Reactant, CUDA, EnsembleMCMC
+using PureRNGs: Philox4x64, randn_next, subrng
 
 Reactant.set_default_backend("gpu")
-rng = Xoshiro(42)
-initial = Reactant.to_rarray(randn(rng, 2, 32))
+rng = Philox4x64(42)
+initial_key = Reactant.to_rarray(subrng(rng, 1))
+draw_walkers(key) = first(randn_next(key, Float64, 2, 32))
+initial = Reactant.@jit draw_walkers(initial_key)
 scalar(x) = -sum(abs2, x) / 2
 function batch!(values, positions)
     values .= vec(-sum(abs2, positions; dims=1) ./ 2)

@@ -9,25 +9,26 @@ Sample a log density with an ensemble of walkers. EnsembleMCMC provides Stretch,
 differential-evolution, snooker, and Gaussian replacement moves, with threads and
 CUDA support. It needs no gradients.
 
-Install the package with `using Pkg; Pkg.add("EnsembleMCMC")`.
+Install the package with `using Pkg; Pkg.add(["EnsembleMCMC", "PureRNGs"])`.
 
 ```julia
-using EnsembleMCMC, Random
+using EnsembleMCMC
+using PureRNGs: Philox4x64, randn_next, subrng
 
 # Sample a two-dimensional standard normal target.
 # Only the log density is needed, up to an additive constant.
 logdensity(x) = -(x[1]^2 + x[2]^2) / 2
 
-rng = Xoshiro(42)
+rng = Philox4x64(42)
 nwalkers = 24
-initial = randn(rng, 2, nwalkers)  # one walker per column
+initial = first(randn_next(subrng(rng, 1), 2, nwalkers))  # one walker per column
 draws = EnsembleMCMC.sample(rng, logdensity, initial, 1_000; warmup=100)
 size(draws.positions)            # (2, 24, 1000): coordinates × walkers × sweeps
 draws.positions[:, 1, 1]         # first walker's first retained position
 ```
 
 Each sweep updates every walker. Walkers interact and are not independent chains.
-Each call draws two seed words from a Julia `AbstractRNG`. Pass a PureRNGs key to replay an ensemble.
+Reuse the PureRNGs key to replay the ensemble in the same environment.
 Choose warmup and run length for the target. Sampling does not test convergence.
 
 Use `initialize`, `step!`, and `sample!` to continue a run or store samples in blocks.

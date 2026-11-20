@@ -58,10 +58,11 @@ A mixture chooses one move for each complete sweep. With the default random
 schedule, weights set fixed selection probabilities:
 
 ```jldoctest mixture
-using EnsembleMCMC, Random
+using EnsembleMCMC
+using PureRNGs: Philox4x64, randn_next, subrng
 
-rng = Xoshiro(42);
-initial = randn(rng, 2, 24);
+rng = Philox4x64(42);
+initial = first(randn_next(subrng(rng, 1), 2, 24));
 move = MoveMixture((StretchMove(), DEMove()), [2, 1]);
 draws = EnsembleMCMC.sample(rng, x -> -sum(abs2, x) / 2, initial, 10; move);
 size(draws.positions)
@@ -112,16 +113,17 @@ the quantities that matter for your analysis. High acceptance alone does not
 show that the ensemble explored the target. Low acceptance or walkers that stop
 moving can reveal a poor starting region or an unsuitable move.
 
-Each call to `sample` with an `AbstractRNG` draws two `UInt64` words to seed a
-new ensemble. Use fresh starting points for each run.
+Derive a separate key for each ensemble with `subrng`. Use fresh starting points
+for each run.
 
 ```jldoctest independent
-using EnsembleMCMC, Random
+using EnsembleMCMC
+using PureRNGs: Philox4x64, randn_next, subrng
 
-rng = Xoshiro(19);
+rng = Philox4x64(19);
 logdensity(x) = -sum(abs2, x) / 2;
-runs = [EnsembleMCMC.sample(rng, logdensity, randn(rng, 2, 24), 200;
-    warmup=100) for _ in 1:4];
+runs = [EnsembleMCMC.sample(subrng(rng, i, 1), logdensity,
+    first(randn_next(subrng(rng, i, 2), 2, 24)), 200; warmup=100) for i in 1:4];
 length(runs)
 
 # output
@@ -137,8 +139,8 @@ as independent chains or add their effective sample sizes.
 ## Reproducibility
 
 Equal seeds and inputs reproduce a run with a deterministic target in the same
-software and hardware environment. A PureRNGs generator passed to `sample` or
-`initialize` serves as a run key. Reusing it replays the same random streams
+software and hardware environment. Both `sample` and `initialize` require a
+PureRNGs key. Reusing it replays the same random streams
 even if you advance its position between calls. Use `subrng(root, run_id)`
 with distinct run IDs for independent ensembles. See
 [Continuing a run](continuation.md).

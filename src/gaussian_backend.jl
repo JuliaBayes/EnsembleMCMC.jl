@@ -1,8 +1,8 @@
-function _kernel_move(move::_AllocatedGaussianMove, initial)
-    T = eltype(move.mean)
+function _kernel_move(move::GaussianReplacementMove, initial)
+    T = eltype(initial)
     d, n = size(initial)
     return _AllocatedGaussianMove(move.shrinkage, similar(initial, T, d), similar(initial, T, d),
-        similar(initial, T, d, d), similar(initial, T, d, n), (; normals=Matrix{T}(undef, d, n)))
+        similar(initial, T, d, d), similar(initial, T, d, n), nothing)
 end
 
 _kernel_move_supported(::_AllocatedGaussianMove) = true
@@ -12,12 +12,8 @@ _synchronize_move(move::_AllocatedGaussianMove) =
 
 function _prepare_gaussian_group!(w::KernelWorkspace, move, state, group, indices, streams)
     n = length(indices)
-    for (j, i) in enumerate(indices)
-        w.host_controls[1, j] = i
-    end
-    copyto!(w.controls, 1, w.host_controls, 1, 4n)
     _launch_kernel(w, _gather_gaussian_complement_kernel!, (32, 4),
-        (size(w.positions, 1), n), move.scratch, w.positions, w.controls)
+        (size(w.positions, 1), n), move.scratch, w.positions, w.permutation, indices)
     scale, valid = _fit_gaussian!(move.anchor, move.mean, move.factor, move.scratch, n,
         move.shrinkage, w.execution)
     return _FittedGaussianMove(move, scale, valid)
@@ -28,45 +24,63 @@ function _evaluate_group!(::KernelExecutor, state, fitted::_FittedGaussianMove,
     w = state.batch_workspace
     move = fitted.move
     n = length(group)
-    for (j, i) in enumerate(group)
-        w.host_controls[1, j] = i
-    end
-    copyto!(w.controls, 1, w.host_controls, 1, 4n)
     if !fitted.valid
         w.host_status[1] = 0
         _launch_kernel(w, _reject_gaussian_group_kernel!, 64, n,
             w.candidates, w.positions, state.candidate_logdensities, state.logdensities,
-            state.accepted, state.acceptance_probabilities, w.controls, w.valid)
+            state.accepted, state.acceptance_probabilities, w.permutation, group, w.valid)
         return nothing
     end
 
-    for (j, i) in enumerate(group)
-        slot = state.draw_buffers.slots[i]
-        _normal_column!(streams.scale, slot, view(move.host.normals, :, j))
-        w.host_factors[2, j] = _uniform_at(streams.acceptance, eltype(w.host_factors), slot)
-    end
-    copyto!(move.scratch, 1, move.host.normals, 1, size(w.positions, 1) * n)
-    copyto!(w.factors, 1, w.host_factors, 1, 2n)
+    _launch_kernel(w, _draw_gaussian_kernel!, 64, n, move.scratch, w.controls,
+        w.factors, w.permutation, w.walker_ids, group, streams)
     _launch_kernel(w, _propose_gaussian_kernel!, 64, n, w.candidates, w.positions, w.controls,
         w.logh, w.valid, state.accepted, state.candidate_logdensities,
         state.logdensities, state.acceptance_probabilities, move.anchor, move.mean, move.factor,
         move.scratch, fitted.scale)
-    _compact!(w, n)
+    _compact!(w, 1:n)
     return nothing
 end
 
-KA.@kernel function _gather_gaussian_complement_kernel!(scratch, positions, controls)
+KA.@kernel function _gather_gaussian_complement_kernel!(scratch, positions, permutation, group)
     coordinate, j = @index(Global, NTuple)
-    walker = @inbounds controls[1, j]
+    walker = permutation[group[j]]
     @inbounds scratch[coordinate, j] = positions[coordinate, walker]
+end
+
+# PureRNGs bulk and static-vector normal draws follow scalar stream order.
+# Very distant columns use the same child stream as the scalar executor.
+function _device_normal_column!(scratch::AbstractMatrix{T}, j, key, id) where {T<:_HardwareFloat}
+    d = UInt64(size(scratch, 1))
+    if UInt64(id) > div(UInt64(1) << 56, d)
+        key = subrng(key, id)
+        id = 1
+    end
+    offset = (UInt64(id) - 1) * d
+    for coordinate in axes(scratch, 1)
+        scratch[coordinate, j] = PureRNGs.randn_at(key, T, offset + coordinate)
+    end
+    return nothing
+end
+_device_normal_column!(scratch, j, key, id) = _normal_column!(key, id, view(scratch, :, j))
+
+KA.@kernel function _draw_gaussian_kernel!(scratch, controls, factors, permutation, walker_ids,
+    group, keys)
+    j = @index(Global, Linear)
+    walker = permutation[group[j]]
+    id = walker_ids[walker]
+    streams = _device_streams(keys)
+    controls[1, j] = walker
+    factors[2, j] = _uniform_at(streams.acceptance, eltype(factors), id)
+    _device_normal_column!(scratch, j, streams.scale, id)
 end
 
 KA.@kernel function _reject_gaussian_group_kernel!(
     candidates, positions, candidate_logdensities, logdensities,
-    accepted, acceptance_probabilities, controls, valid,
+    accepted, acceptance_probabilities, permutation, group, valid,
 )
     j = @index(Global, Linear)
-    walker = @inbounds controls[1, j]
+    walker = permutation[group[j]]
     @inbounds accepted[walker] = false
     @inbounds valid[j] = false
     @inbounds candidate_logdensities[walker] = logdensities[walker]

@@ -7,13 +7,8 @@ const _GROUP_PURPOSE = UInt64(4)
 const _COMPANION_PURPOSE = UInt64(5)
 const _SCALE_PURPOSE = UInt64(6)
 
-# StatefulRNG exposes the same key on the CPU, where all proposal controls are drawn.
-_rng_root(rng::AbstractPureRNG, max_depth) = parent(PureRNGs.StatefulRNG(rng))
-_rng_root(rng, max_depth) = throw(ArgumentError(
-    "Unsupported RNG $(typeof(rng)); use a PureRNGs key such as Philox4x64(42)"))
-
-_sample_root(rng::AbstractPureRNG) = rng
-_sample_root(rng::AbstractRNG) = PureRNGs.Philox4x64((rand(rng, UInt64), rand(rng, UInt64)))
+# Extract a native key before deriving sweep addresses.
+_cpu_rng(rng::AbstractPureRNG) = parent(PureRNGs.StatefulRNG(rng))
 
 const _HardwareFloat = Union{Float16,Float32,Float64}
 const _NORMAL_BLOCK_SIZE = 8
@@ -50,8 +45,13 @@ function _normal_column!(rng::AbstractPureRNG, id, destination::AbstractVector{T
     end
     return destination
 end
-_normal_column!(rng::AbstractPureRNG, id, destination) =
-    randn!(PureRNGs.StatefulRNG(subrng(rng, id)), destination)
+function _normal_column!(rng::AbstractPureRNG, id, destination)
+    bridge = PureRNGs.StatefulRNG(subrng(rng, id))
+    for i in eachindex(destination)
+        destination[i] = randn(bridge, eltype(destination))
+    end
+    return destination
+end
 
 # Uniform on 1:n, including spans that do not divide a power of two.
 # DE needs an ordered pair to have the same probability as its reverse.

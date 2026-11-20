@@ -179,10 +179,11 @@ const _DE_SNOOKER_GROUP_ORDERS = (
     (1, 2, 3), (1, 3, 2), (2, 1, 3), (2, 3, 1), (3, 1, 2), (3, 2, 1),
 )
 
-function _proposal_parameters(::DESnookerMove, groups, streams, walker_id)
+function _proposal_parameters(::DESnookerMove, groups, streams, walker_id, active=nothing)
     order = _DE_SNOOKER_GROUP_ORDERS[_companion_index(streams, walker_id, 4, 1, 6)]
     return ntuple(3) do j
-        group = groups[order[j]]
+        ordinal = order[j]
+        group = groups[isnothing(active) ? ordinal : ordinal + (ordinal >= active)]
         group[_companion_index(streams, walker_id, 4, j + 1, length(group))]
     end
 end

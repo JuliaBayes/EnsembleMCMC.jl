@@ -14,8 +14,8 @@ end
     center = [1.0, -2.0]
     precision = T.(inv(covariance))
     target(x) = (y = x .- T.(center); -dot(y, precision * y) / 2)
-    initial = [T.(center .+ randn(Philox4x((17, i)), 2)) for i in 1:32]
-    state, draws = run_chain(Philox4x((29, 3)), target, initial; move)
+    initial = [T.(center .+ first(randn_next(Philox4x64(UInt64.((17, i))), 2))) for i in 1:32]
+    state, draws = run_chain(Philox4x64(UInt64.((29, 3))), target, initial; move)
     @test eltype(draws.positions) === T
     test_moments(Float64.(draws.positions), center, covariance)
     rates = acceptance_rate(state)
@@ -29,8 +29,8 @@ end
     @test 0.6 < only(acceptance_rate(state)) < 0.8
 end
 
-@testset "Threefry4x Gaussian moments" begin
-    _, draws = run_chain(Threefry4x((3, 1, 4, 1)), gaussian_logdensity, initial_walkers();
+@testset "Threefry4x64 Gaussian moments" begin
+    _, draws = run_chain(Threefry4x64(UInt64.((3, 1, 4, 1))), gaussian_logdensity, initial_walkers();
         move=StretchMove())
     test_moments(draws.positions, zeros(2), Matrix{Float64}(I, 2, 2))
 end
@@ -41,8 +41,8 @@ end
     # x1 ~ N(0, 1), x2 | x1 ~ N(b(x1^2 - 1), 1): E = (0, 0), Var(x2) = 1 + 2b^2.
     b = 1.0
     banana(x) = -x[1]^2 / 2 - (x[2] - b * (x[1]^2 - 1))^2 / 2
-    initial = [randn(Philox4x((41, i)), 2) for i in 1:32]
-    _, draws = run_chain(Philox4x((43, 5)), banana, initial; move, nsamples=16_000)
+    initial = [first(randn_next(Philox4x64(UInt64.((41, i))), 2)) for i in 1:32]
+    _, draws = run_chain(Philox4x64(UInt64.((43, 5))), banana, initial; move, nsamples=16_000)
     test_moments(draws.positions, zeros(2), [1.0 0.0; 0.0 1 + 2b^2])
     dependence = (draws.positions[1, :, :].^2 .- 1) .* draws.positions[2, :, :]
     @test abs(mcse_z(dependence, 2b)) < 4.5

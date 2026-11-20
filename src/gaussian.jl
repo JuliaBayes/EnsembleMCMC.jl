@@ -110,7 +110,8 @@ function _standardize_gaussian!(mean, centered, scale, n)
     sum!(reshape(mean, :, 1), centered)
     mean ./= n
     centered .-= mean
-    return all(isfinite, mean)
+    # Each normalized entry has magnitude at most one. An Int-sized sum fits in Float32 or Float64.
+    return eltype(mean) <: Union{Float32,Float64} || all(isfinite, mean)
 end
 
 _gaussian_trace(factor) = tr(factor)

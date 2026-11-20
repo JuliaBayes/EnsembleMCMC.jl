@@ -39,7 +39,7 @@ function test_kernel_executor(device=copy)
             step!(state)
             @test calls[] == 2size(points, 2)
         end
-        initial = randn(MersenneTwister(18), 3, 12)
+        initial = first(randn_next(Philox4x64(18), 3, 12))
         coordinates = Float32.(initial)
         values = Float64.(scalar.(Vector.(eachcol(coordinates))))
         cached = device(values)
@@ -71,10 +71,13 @@ function test_kernel_executor(device=copy)
             @test all(isfinite, reduce(hcat, Array.(current_state(state).positions)))
             @test Array(draws.positions) ≈ expected.positions
         end
-        reference = initialize(test_rng(), scalar, initial; move=DEMove())
-        state = initialize(test_rng(), target, device(initial); move=DEMove(), executor=KernelExecutor())
+        ids = 17 .* reverse(axes(initial, 2))
+        reference = initialize(test_rng(), scalar, initial; move=DEMove(), walker_ids=ids)
+        state = initialize(test_rng(), target, device(initial);
+            move=DEMove(), walker_ids=ids, executor=KernelExecutor())
         previous_logdensities = copy(current_state(reference).logdensities)
-        address = test_rng()
+        # A sweep key can use a different engine from the run key.
+        address = Threefry4x64(573)
         step!(reference, address; proposal_index=2)
         step!(state, address; proposal_index=2)
         transition = snapshot(state)
@@ -143,13 +146,13 @@ function test_kernel_executor(device=copy)
         initial = [1.0 1 1 0 0 2; 0.1 0.1 0.1 0 1 0]
         flat = BatchedLogDensity(_ -> 0.0,
             (values, positions) -> (push!(widths, size(positions, 2)); fill!(values, -Inf)))
-        draws = sample!(initialize(Philox4x((3, 19)), flat, device(initial);
+        draws = sample!(initialize(Philox4x64(13), flat, device(initial);
             move=GaussianReplacementMove(), executor=KernelExecutor()), 1)
         @test widths == [3]
         @test !any(Array(draws.accepted))
         @test Array(draws.positions[:, :, 1]) == initial
         empty!(widths)
-        step!(initialize(Philox4x((3, 19)), flat, device(initial .- initial[:, 1]);
+        step!(initialize(Philox4x64(13), flat, device(initial .- initial[:, 1]);
             move=GaussianReplacementMove(), executor=KernelExecutor()))
         @test widths == [3]
 
@@ -218,9 +221,10 @@ function test_kernel_executor(device=copy)
             @test all(<=(1), Array(draws.positions)[1, :, :])
         end
 
-        # More walkers than the scan width exercise the chunked compaction and reduction.
-        wide = randn(MersenneTwister(5), 2, 601)
-        for move in (StretchMove(), DEMove())
+        # Compare wide linear proposals and both shuffle sizes with the serial sampler.
+        linear = MoveMixture((StretchMove(), DEMove()), [1, 1]; schedule=:cycle)
+        for (move, d, n) in ((linear, 65, 601), (DEMove(), 2, 4097))
+            wide = first(randn_next(Philox4x64(5), d, n))
             reference = initialize(test_rng(), scalar, wide; move)
             state = initialize(test_rng(), target, device(wide); move, executor=KernelExecutor())
             expected, draws = sample!(reference, 5), sample!(state, 5)
@@ -228,14 +232,15 @@ function test_kernel_executor(device=copy)
             @test Array(draws.positions) ≈ expected.positions
             @test current_state(state).acceptances == current_state(reference).acceptances
         end
-        backend = EnsembleMCMC.KA.get_backend(device(wide))
+        backend = EnsembleMCMC.KA.get_backend(device(initial))
         @test all(Iterators.product((1, 7, 256, 257, 1000, 4099), (1, 64, 256))) do (n, width)
-            valid = rand(MersenneTwister(n), Bool, n)
+            slots = 4:(n + 3)
+            valid = first(rand_next(Philox4x64(n), Bool, last(slots)))
             indices, status = device(zeros(Int, n)), device(zeros(Int, 3))
-            EnsembleMCMC._compact_kernel!(backend, width)(indices, status, device(valid), n;
+            EnsembleMCMC._compact_kernel!(backend, width)(indices, status, device(valid), slots;
                 ndrange=width)
             count = Array(status)[1]
-            count == sum(valid) && Array(indices)[1:count] == findall(valid)
+            Array(indices)[1:count] == filter(i -> valid[i], slots)
         end
     end
 end

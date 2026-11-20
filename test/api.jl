@@ -4,12 +4,11 @@ error_of(f) = try f(); nothing; catch err; err; end
     initial = initial_walkers()
     saved_initial = deepcopy(initial)
     move = MoveMixture((StretchMove(), DEMove()), [2, 1]; schedule=:cycle)
-    parent = Xoshiro(91)
-    sampler_rng = Philox4x64((rand(parent, UInt64), rand(parent, UInt64)))
-    state = initialize(sampler_rng, gaussian_logdensity, initial; move)
+    rng = Philox4x64(91)
+    @test_throws MethodError EnsembleMCMC.sample(StatefulRNG(rng), gaussian_logdensity, initial, 1)
+    state = initialize(rng, gaussian_logdensity, initial; move)
     step!(state, 7)
     expected = sample!(state, 9; thin=3)
-    rng = Xoshiro(91)
     actual = EnsembleMCMC.sample(
         rng,
         gaussian_logdensity,
@@ -21,22 +20,10 @@ error_of(f) = try f(); nothing; catch err; err; end
         logdensities=gaussian_logdensity.(initial),
     )
     @test actual == expected
-    _, advanced = rand_next(sampler_rng, UInt32)
+    _, advanced = rand_next(rng, UInt32)
     @test EnsembleMCMC.sample(advanced, gaussian_logdensity, initial, 9; move, warmup=7, thin=3) == expected
-    @test rand(rng, UInt64) == rand(parent, UInt64)
     @test initial == saved_initial
-    @test EnsembleMCMC.sample(
-        Xoshiro(91),
-        gaussian_logdensity,
-        initial,
-        9;
-        move,
-        warmup=7,
-        thin=3,
-    ) == expected
-    @test EnsembleMCMC.sample(rng, gaussian_logdensity, initial, 9; move, warmup=7, thin=3).positions !=
-          expected.positions
-    @test size(EnsembleMCMC.sample(gaussian_logdensity, initial, 2).positions) == (2, 24, 2)
+    @test_throws MethodError EnsembleMCMC.sample(gaussian_logdensity, initial, 2)
 end
 
 @testset "Move-aware walker counts" begin
@@ -71,15 +58,11 @@ end
 @testset "Initialization errors" begin
     lp = gaussian_logdensity
     initial = initial_walkers()
-    @test_throws ArgumentError initialize(test_rng(), lp, [randn(Philox4x((1, i)), 3) for i in 1:5])
+    @test_throws ArgumentError initialize(test_rng(), lp, [first(randn_next(Philox4x64(UInt64.((1, i))), 3)) for i in 1:5])
     @test_throws ArgumentError initialize(test_rng(), lp, Vector{Float64}[])
     @test_throws ArgumentError initialize(test_rng(), lp, 3.0)
     for ids in (1:3, fill(1, 24), [0; 2:24], [1.5; 2:24], [typemax(Int32); 2:24], string.(1:24))
         @test_throws ArgumentError initialize(test_rng(), lp, initial; walker_ids=ids)
-    end
-    for rng in (Xoshiro(1), MersenneTwister(1), Philox4x(UInt32, (1, 2), 10))
-        err = error_of(() -> initialize(rng, lp, initial))
-        @test err isa ArgumentError && occursin("Philox4x", err.msg)
     end
     for move in (:foo, StretchMove, [StretchMove()])
         @test_throws ArgumentError initialize(test_rng(), lp, initial; move)
@@ -100,53 +83,22 @@ end
         sample!(initialize(test_rng(), lp, initial; move=MoveMixture(moves, [0.5, 1.0])), 6)
 end
 
-@testset "Random123 partition validation" begin
-    lp, initial = gaussian_logdensity, initial_walkers()
-    address(ctr4, ctr3=0, ctr2=0) =
-        Random123.set_counter!(Philox4x((573, 19)), (0, ctr2, ctr3, ctr4))
-    depth2 = address(0x8000000280000000)
-    state = initialize(depth2, lp, initial)
-    @test step!(state, 2) === state
-    depth3 = address(0x8000000280000002, 0x8000000000000000)
-    err = error_of(() -> initialize(depth3, lp, initial))
-    @test err isa ArgumentError && occursin("depth 3", err.msg)
-    depth4 = address(0x8000000280000002, 0x8000000280000000)
-    @test step!(state, depth4; proposal_index=2) === state
-
-    last_cycle_base = typemax(Int32) - typemax(Int16)
-    cycle_address(base) = address(0x8000000280000000 | UInt64(base))
-    @test current_state(step!(initialize(cycle_address(last_cycle_base), lp, initial))).sweep_count == 1
-    @test_throws ArgumentError initialize(cycle_address(last_cycle_base + 1), lp, initial)
-
-    last_purpose_base = typemax(Int32) - (1 + 6 * (typemax(Int16) - 2))
-    purpose_address(base) = address(0x8000000280000002, 0x8000000280000000 | UInt64(base))
-    @test step!(state, purpose_address(last_purpose_base)) === state
-    saved = snapshot(state)
-    depth5 = address(0x8000000280000002, 0x8000000280000002, 0x8000000000000000)
-    err = error_of(() -> step!(state, depth5))
-    @test err isa ArgumentError && occursin("depth 5", err.msg)
-    @test_throws ArgumentError step!(state, purpose_address(last_purpose_base + 1))
-    @test_throws ArgumentError step!(state, address(0x8000000280000002, 0x8000000000000001))
-    @test snapshot(state) == saved
-    @test step!(state) === state
-end
-
 @testset "Addressed proposal index bounds" begin
-    state = initialize(Philox4x((573, 19)), gaussian_logdensity, initial_walkers())
+    state = initialize(Philox4x64(UInt64.((573, 19))), gaussian_logdensity, initial_walkers())
     maximum_index = EnsembleMCMC._PROPOSALS_PER_PURPOSE
     for index in (0, -1, maximum_index + 1)
-        @test_throws ArgumentError step!(state, Philox4x((1, 2)); proposal_index=index)
+        @test_throws ArgumentError step!(state, Philox4x64(UInt64.((1, 2))); proposal_index=index)
     end
     @test current_state(state).sweep_count == 0
-    step!(state, Philox4x((1, 2)); proposal_index=maximum_index)
+    step!(state, Philox4x64(UInt64.((1, 2))); proposal_index=maximum_index)
     @test current_state(state).sweep_count == 1
 end
 
-@testset "Threefry4x sampling" begin
-    rng = Threefry4x((5, 6, 7, 8))
+@testset "Threefry4x64 sampling" begin
+    rng = Threefry4x64(UInt64.((5, 6, 7, 8)))
     first_run = sample!(initialize(rng, gaussian_logdensity, initial_walkers()), 20)
     @test first_run == sample!(initialize(rng, gaussian_logdensity, initial_walkers()), 20)
-    @test first_run.positions != sample!(initialize(Threefry4x((5, 6, 7, 9)),
+    @test first_run.positions != sample!(initialize(Threefry4x64(UInt64.((5, 6, 7, 9))),
         gaussian_logdensity, initial_walkers()), 20).positions
     threaded = initialize(rng, gaussian_logdensity, initial_walkers(); executor=ThreadedExecutor())
     @test sample!(threaded, 20) == first_run

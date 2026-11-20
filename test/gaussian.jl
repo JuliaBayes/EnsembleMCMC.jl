@@ -62,7 +62,7 @@
         initial = [0.0 0 0 0 0 0 1 0; 0 0 0 0 0 0 0 1]
         calls[] = 0
         reject_proposals(x) = (calls[] += 1; calls[] <= size(initial, 2) ? 0.0 : -Inf)
-        state = initialize(Philox4x((1, 19)), reject_proposals, initial;
+        state = initialize(Philox4x64(UInt64.((1, 19))), reject_proposals, initial;
             move=GaussianReplacementMove(shrinkage=0))
         draws = sample!(state, 1)
         @test calls[] in (size(initial, 2), 3size(initial, 2) ÷ 2)
@@ -72,7 +72,7 @@
         # The seed puts the three constant points in one group.
         initial = [1.0 1 1 0 0 2; 0.1 0.1 0.1 0 1 0]
         calls[] = 0
-        state = initialize(Philox4x((3, 19)), reject_proposals, initial;
+        state = initialize(Philox4x64(13), reject_proposals, initial;
             move=GaussianReplacementMove())
         draws = sample!(state, 1)
         @test calls[] == 3size(initial, 2) ÷ 2
@@ -80,7 +80,7 @@
         @test draws.positions[:, :, 1] == initial
         initial = initial .- initial[:, 1]
         calls[] = 0
-        step!(initialize(Philox4x((3, 19)), reject_proposals, initial;
+        step!(initialize(Philox4x64(13), reject_proposals, initial;
             move=GaussianReplacementMove()))
         @test calls[] == 3size(initial, 2) ÷ 2
     end
@@ -107,10 +107,10 @@
 
     @testset "Group distances against LinearAlgebra, $T, d=$d" for T in (Float32, Float64),
         d in (1, 5, 128, 129)
-        rng = Philox4x((11, d))
-        A = randn(rng, T, d, d)
+        rng = Philox4x64(UInt64.((11, d)))
+        A, rng = randn_next(rng, T, d, d)
         factor = Matrix(cholesky(Symmetric(A * A' + d * I)).L)
-        points = randn(rng, T, d, 3)
+        points, _ = randn_next(rng, T, d, 3)
         fit = (; anchor=zeros(T, d), mean=zeros(T, d), factor)
         reference = [sum(abs2, LowerTriangular(factor) \ v) / 2 for v in eachcol(points)]
         @test gaussian_distances(fit, one(T), points) ≈ reference rtol=1000eps(T)
@@ -118,9 +118,12 @@
 
     @testset "Fit against LinearAlgebra, $T, d=$d, shrinkage=$s" for T in (Float32, Float64),
         d in (1, 3, 10), s in (0, 0.3, :auto)
-        rng = Philox4x((13, d))
+        rng = Philox4x64(UInt64.((13, d)))
         n = 2d + 3
-        X = randn(rng, T, d, d) * randn(rng, T, d, n) .+ 10randn(rng, T, d)
+        A, rng = randn_next(rng, T, d, d)
+        points, rng = randn_next(rng, T, d, n)
+        shift, _ = randn_next(rng, T, d)
+        X = A * points .+ 10shift
         anchor, μ, factor = zeros(T, d), zeros(T, d), zeros(T, d, d)
         shrinkage = s isa Symbol ? s : T(s)
         scale, valid = EnsembleMCMC._fit_gaussian!(anchor, μ, factor, copy(X), n, shrinkage)
@@ -134,7 +137,7 @@
     end
 
     @testset "Auto shrinkage falls back when the complement is too small" begin
-        X = randn(Philox4x((17, 1)), 4, 4)
+        X = first(randn_next(Philox4x64(UInt64.((17, 1))), 4, 4))
         fit(s) = begin
             anchor, μ, factor = zeros(4), zeros(4), zeros(4, 4)
             scale, valid = EnsembleMCMC._fit_gaussian!(anchor, μ, factor, copy(X), 4, s)
@@ -145,7 +148,7 @@
     end
 
     @testset "Float32 fit far from the origin" begin
-        X = randn(Philox4x((19, 1)), Float32, 2, 40) .+ 1f6
+        X = first(randn_next(Philox4x64(UInt64.((19, 1))), Float32, 2, 40)) .+ 1f6
         anchor, μ, factor = zeros(Float32, 2), zeros(Float32, 2), zeros(Float32, 2, 2)
         scale, valid = EnsembleMCMC._fit_gaussian!(anchor, μ, factor, copy(X), 40, 0f0)
         @test valid
@@ -158,8 +161,8 @@
         # The Cholesky factor is not equivariant, so compare densities, not draws.
         matrix = [1e3 2.0 0; -0.5 1e-2 0; 0 1 1]
         shift = [1e4, -3.0, 0.5]
-        X = randn(Philox4x((29, 1)), 3, 12)
-        points = randn(Philox4x((29, 2)), 3, 5)
+        X = first(randn_next(Philox4x64(UInt64.((29, 1))), 3, 12))
+        points = first(randn_next(Philox4x64(UInt64.((29, 2))), 3, 5))
         distances(X, points) = begin
             fit = (anchor=zeros(3), mean=zeros(3), factor=zeros(3, 3))
             scale, valid = EnsembleMCMC._fit_gaussian!(fit.anchor, fit.mean, fit.factor,
@@ -173,11 +176,11 @@
     @testset "Ill-conditioned rotated target keeps acceptance" begin
         # Shrinkage 0.5 toward tr(C)/d * I gives acceptance near 0.003 here.
         d = 10
-        Q = Matrix(qr(randn(Philox4x((23, 1)), d, d)).Q)
+        Q = Matrix(qr(first(randn_next(Philox4x64(UInt64.((23, 1))), d, d))).Q)
         variances = exp.(range(0, log(1e3), length=d))
         precision = Symmetric(Q * Diagonal(inv.(variances)) * Q')
         L = cholesky(Symmetric(Q * Diagonal(variances) * Q')).L
-        initial = [L * randn(Philox4x((23, i + 1)), d) for i in 1:100]
+        initial = [L * first(randn_next(Philox4x64(UInt64.((23, i + 1))), d)) for i in 1:100]
         state = initialize(test_rng(), x -> -dot(x, precision * x) / 2, initial;
             move=GaussianReplacementMove())
         step!(state, 300)

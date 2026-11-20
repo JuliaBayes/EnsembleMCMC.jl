@@ -13,13 +13,13 @@ Pkg.add("PureRNGs")
 ```
 
 ```jldoctest continuation
-using EnsembleMCMC, Random
+using EnsembleMCMC
 using EnsembleMCMC: initialize, step!, sample!, current_state, snapshot
-using PureRNGs: Philox4x64, subrng
+using PureRNGs: Philox4x64, randn_next, subrng
 
 root = Philox4x64(42);
 run_key = subrng(root, 1);
-initial = randn(Xoshiro(19), 2, 24);
+initial = first(randn_next(Philox4x64(19), 2, 24));
 state = initialize(run_key, x -> -sum(abs2, x) / 2, initial);
 
 step!(state, 100);              # discard warmup
