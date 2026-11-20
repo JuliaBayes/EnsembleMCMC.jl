@@ -218,6 +218,21 @@ function test_proposal_overflow(device=identity; executor=SerialExecutor())
         @test reduce(hcat, Array.(current_state(step!(state, 8)).positions)) != mobile
     end
 
+    @testset "Repeated snooker starting points" begin
+        target = BatchedLogDensity(x -> 0.0, (v, x) -> fill!(v, 0.0))
+        key, move = Philox4x64(271), DESnookerMove()
+        for trapped in (reshape([zeros(7); 1], 1, :), [zeros(2, 6) [1 0; 0 1]])
+            @test_throws ArgumentError initialize(key, target, device(trapped); move, executor)
+            mobile = copy(trapped)
+            mobile[1, 3] = 0.5
+            state = initialize(key, target, device(mobile); move, executor)
+            @test_throws ArgumentError synchronize!(state, device(trapped), zeros(8))
+            @test reduce(hcat, Array.(current_state(state).positions)) == mobile
+            synchronize!(state, device(mobile), zeros(8))
+            @test reduce(hcat, Array.(current_state(step!(state, 8)).positions)) != mobile
+        end
+    end
+
     @testset "Snooker projections beyond the coordinate range" begin
         points = [0 .1 .6 -.6; 0 .6 0 0]
         scale = floatmax(Float64)

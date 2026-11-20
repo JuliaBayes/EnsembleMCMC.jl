@@ -12,8 +12,8 @@ parameter vectors also works. Use floating-point coordinates.
 Choose distinct starting points spread across a plausible part of the target.
 Every coordinate must be finite, and the points must span all parameter
 directions. Identical points or points on a lower-dimensional plane cannot form
-a valid ensemble. With exactly four walkers and only snooker moves, at least
-one pair of opposite edges must have a nonzero dot product.
+a valid ensemble. For pure snooker sampling, four walkers must admit an ordering
+with `(a - b) ⋅ (c - d) ≠ 0`. Otherwise every projected displacement is zero.
 
 For a model with `d` parameters, the default Stretch move needs at least `2d`
 walkers. The minimum depends on the move:

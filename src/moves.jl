@@ -56,8 +56,8 @@ Project a companion difference onto the line from a reference walker to the
 active walker, then multiply that displacement by `scale`. The scale must be
 finite and positive. Degenerate reference directions produce a rejection.
 Uses four groups and requires at least `max(2d, 4)` walkers for dimension `d`.
-With four walkers and only snooker moves, at least one pair of opposite
-edges must have a nonzero dot product to allow a displacement.
+Pure snooker sampling requires four walkers whose positions can be ordered so
+that `(a - b) ⋅ (c - d) ≠ 0`. Otherwise every projected displacement is zero.
 This move is not generally affine-equivariant.
 """
 struct DESnookerMove{S<:Real} <: AbstractEnsembleMove
@@ -74,20 +74,62 @@ end
 DESnookerMove(; scale::Real = 1.7) = DESnookerMove(scale)
 
 function _check_snooker_start(moves, weights, positions, ::Type{T}) where {T}
-    length(positions) == 4 || return nothing
     all(moves[i] isa DESnookerMove for i in eachindex(moves)
         if isnothing(weights) || weights[i] > 0) || return nothing
-    # Four walkers give three disjoint edge pairs. Exact dot products distinguish
-    # a zero projection from a small displacement on a nearly perpendicular pair.
-    a, b, c, d = map(positions) do point
-        values = Base.has_offset_axes(point) ? collect(point) : Array(point)
-        map(x -> Rational{BigInt}(convert(T, x)), values)
-    end
-    if iszero(dot(a - b, c - d)) && iszero(dot(a - c, b - d)) && iszero(dot(a - d, b - c))
-        throw(ArgumentError("The four walkers give only zero snooker projections. " *
-            "Change the starting points or give another move positive weight."))
-    end
+    _zero_snooker_projections(positions, T) && throw(ArgumentError(
+        "The walkers give only zero snooker projections. " *
+        "Change the starting points or give another move positive weight."))
     return nothing
+end
+
+_snooker_host_array(array) = Base.has_offset_axes(array) ? collect(array) : Array(array)
+_snooker_point(point::Vector{T}, ::Type{T}) where {T} = point
+_snooker_point(point, ::Type{T}) where {T} = convert(Vector{T}, _snooker_host_array(point))
+
+_snooker_prefix(positions, n, ::Type{T}) where {T} =
+    map(i -> _snooker_point(positions[i], T), 1:n)
+
+function _snooker_prefix(positions::Base.ColumnSlices, n, ::Type{T}) where {T}
+    matrix = parent(positions)
+    block = view(matrix, :, 1:n)
+    # Transfer the prefix of a device matrix in one copy.
+    host = matrix isa Matrix{T} ? block : convert(Matrix{T}, _snooker_host_array(block))
+    return collect(eachcol(host))
+end
+
+function _zero_snooker_projections(positions, ::Type{T}) where {T}
+    if length(positions) == 4
+        a, b, c, d = map(p -> Rational{BigInt}.(_snooker_point(p, T)), positions)
+        return iszero(dot(a - b, c - d)) && iszero(dot(a - c, b - d)) && iszero(dot(a - d, b - c))
+    end
+    # More than four walkers implies n > d+2 under the 2d minimum. A trapped
+    # population of this size has at most d+1 distinct points, so find a repeat.
+    d = length(first(positions))
+    prefix = _snooker_prefix(positions, d + 2, T)
+    sort!(prefix; by=first, lt=(<))
+    for j in 2:length(prefix)
+        for i in (j - 1):-1:1
+            first(prefix[i]) == first(prefix[j]) || break
+            prefix[i] == prefix[j] && return _orthogonal_snooker_offsets(positions, prefix[i], T)
+        end
+    end
+    return false
+end
+
+function _orthogonal_snooker_offsets(positions, anchor, ::Type{T}) where {T}
+    # Two copies of the anchor let any two other offsets form disjoint edges.
+    # Conversely, pairwise orthogonal offsets make every disjoint edge dot zero.
+    exact_anchor = Rational{BigInt}.(anchor)
+    offsets = typeof(exact_anchor)[]
+    for point in positions
+        p = _snooker_point(point, T)
+        p == anchor && continue
+        length(offsets) == length(anchor) && return false
+        offset = Rational{BigInt}.(p) .- exact_anchor
+        any(v -> !iszero(dot(v, offset)), offsets) && return false
+        push!(offsets, offset)
+    end
+    return true
 end
 
 group_count(::StretchMove) = 2

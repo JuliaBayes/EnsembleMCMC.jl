@@ -897,7 +897,7 @@ of borrowed walkers, gives undefined results. Accept a
 coordinate-by-walker matrix or a vector of coordinate vectors. Walker identities,
 RNG, sweep count, mixture phase, and cumulative counters stay unchanged.
 Clear the last-transition metadata. No target calls or affine-rank check run here.
-Four-walker pure snooker runs require a nonzero projection after conversion.
+Pure snooker runs require a nonzero projection after coordinate conversion.
 The caller must preserve density consistency and affine rank. Use
 [`validate_positions`](@ref) after replacing positions through initialization retries.
 """
