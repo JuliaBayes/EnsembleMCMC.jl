@@ -238,7 +238,7 @@ end
 
 _gaussian_distance(residual, ::Type{H}) where {H} = sum(x -> abs2(H(x) / 2), residual)
 
-function _gaussian_distances!(store!, work, positions, group, move, scale, H=eltype(work))
+function _gaussian_distances!(store!, work, positions, group, move, scale, ::Type{H}=eltype(work)) where {H}
     for (j, i) in enumerate(group)
         residual = view(work, j, :)
         position = positions[i]
