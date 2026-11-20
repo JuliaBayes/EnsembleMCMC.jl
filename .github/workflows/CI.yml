@@ -38,6 +38,9 @@ jobs:
       - uses: julia-actions/cache@v3.3.0
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
+      - name: Check minimum dependency versions
+        if: matrix.julia == '1.10' && matrix.threads == '1'
+        run: julia --startup-file=no --project=. test/minimum_dependencies.jl
 
   # Only this job gets id-token: write, for the Codecov OIDC upload.
   # There is no GPU job because no GPU runners are available. See CONTRIBUTING.md for the CUDA tests.

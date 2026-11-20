@@ -19,7 +19,7 @@ LinearAlgebra = "1"
 PrecompileTools = "1.0.1"
 PureRNGs = "0.0.2"
 Reactant = "0.2.304"
-StaticArrays = "1"
+StaticArrays = "1.1"
 Statistics = "1"
 Test = "1"
 
