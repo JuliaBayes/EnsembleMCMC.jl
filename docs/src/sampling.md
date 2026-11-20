@@ -95,8 +95,10 @@ fails, it uses shrinkage `1/2` instead. That fallback is not affine invariant.
 
 More walkers give the fit more points, at the cost of more target evaluations.
 An explicit `shrinkage` blends the sample covariance with an isotropic covariance
-of the same trace. `shrinkage=0` uses the sample covariance unchanged. A fit that
-still fails leaves the group unchanged. Repeated failures can stall the move.
+of the same trace. Positive shrinkage preserves a common change of units.
+Changing units on just one axis can change the proposal and its acceptance.
+`shrinkage=0` uses the sample covariance unchanged. A fit that still fails
+leaves the group unchanged. Repeated failures can stall the move.
 
 The proposal uses the independence-proposal Hastings correction, following the
 replacement move in [Goodman and Weare, equation (12)](https://msp.org/camcos/2010/5-1/camcos-v5-n1-p04-p.pdf).

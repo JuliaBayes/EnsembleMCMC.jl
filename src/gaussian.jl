@@ -6,15 +6,14 @@ complement, with the independence-proposal Hastings correction.
 
 With the default `shrinkage=:auto`, the proposal covariance is `(1 + d/m) * C`,
 where `C` is the unbiased sample covariance of the `m` complement walkers. This
-is affine invariant when the fit succeeds. The factor `1 + d/m` widens the
-directions that a small complement underestimates. If `m <= d` or `C` is not
-numerically positive definite, the move uses `shrinkage=1/2` for that group. This isotropic
-fallback is not affine invariant.
+is affine invariant when the fit succeeds. The factor `1 + d/m` multiplies every
+covariance eigenvalue equally. If `m <= d` or `C` is not numerically positive
+definite, the move uses `shrinkage=1/2` for that group.
 
-A finite `shrinkage` in `[0, 1]` shrinks `C` toward `tr(C)/d * I` instead. This
-is not scale invariant: on targets with very different scales or strong
-correlations, a positive value makes the proposal too wide and acceptance
-collapses. `shrinkage=0` uses `C` unchanged.
+A finite `shrinkage` in `[0, 1]` shrinks `C` toward `tr(C)/d * I`.
+Positive shrinkage preserves translations, rotations and common rescaling.
+Rescaling coordinates separately can change the proposal and reduce acceptance.
+`shrinkage=0` uses `C` unchanged.
 For an unregularized fit, each Cholesky pivot must exceed its marginal
 standard deviation times `sqrt(d * eps(T))` in the fit precision `T`.
 
