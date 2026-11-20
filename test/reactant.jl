@@ -1,6 +1,7 @@
 using EnsembleMCMC, Reactant, CUDA, Test
 using PureRNGs: Philox4x64, randn_next
-using EnsembleMCMC: initialize, step!, sample!, snapshot, synchronize!, current_state
+using EnsembleMCMC: initialize, step!, sample!, snapshot, synchronize!, current_state,
+    validate_positions
 
 Reactant.set_default_backend("gpu")
 CUDA.allowscalar(false)
@@ -110,4 +111,29 @@ end
     state = initialize(Philox4x64(42), target, initial; executor = KernelExecutor())
     @test_throws failure step!(state)
     @test_throws ArgumentError current_state(state)
+end
+
+@testset "Reactant position validation" begin
+    coordinates = [0.0 1 2 0 0; 0.0 1 2 1 NaN]
+    points = Reactant.to_rarray(coordinates[:, 1:4])
+    @test validate_positions(points) === nothing
+    @test_throws ArgumentError("Walkers must have full affine rank") validate_positions(
+        Reactant.to_rarray(coordinates[:, 1:3]),
+    )
+    nonfinite = Reactant.to_rarray(coordinates)
+    @test_throws ArgumentError("Coordinates must be finite") validate_positions(nonfinite)
+    @test validate_positions(view(nonfinite, :, [4, 1, 2])) === nothing
+
+    scalar(x) = -sum(abs2, x) / 2
+    target = BatchedLogDensity(scalar, batch_normal!; batch_size = 2)
+    state = initialize(Philox4x64(42), target, points; executor = KernelExecutor())
+    borrowed = current_state(state).positions
+    @test validate_positions(borrowed) === nothing
+    @test validate_positions(borrowed[[4, 1, 2]]) === nothing
+    columns = collect(eachcol(nonfinite))
+    @test validate_positions(columns[[4, 1, 2]]) === nothing
+    @test_throws ArgumentError("Walkers must have full affine rank") validate_positions(
+        columns[[3, 1, 2]],
+    )
+    @test_throws ArgumentError("Coordinates must be finite") validate_positions(columns[[5, 1, 4]])
 end

@@ -17,6 +17,23 @@ _owner(array::Reactant.ConcretePJRTArray) = array
 _owner(array) = _owner(parent(array))
 _wait(array) = wait(_owner(array))
 
+function EnsembleMCMC.validate_positions(positions::Reactant.AnyConcretePJRTArray{<:Any,2})
+    return EnsembleMCMC.validate_positions(Array(positions))
+end
+
+function EnsembleMCMC.validate_positions(
+    positions::AbstractVector{<:Reactant.AnyConcretePJRTArray{<:Any,1}},
+)
+    Base.require_one_based_indexing(positions)
+    copies = IdDict{Any,Array}()
+    return EnsembleMCMC.validate_positions(map(p -> _validation_host(p, copies), positions))
+end
+
+# Borrowed columns can share one device matrix. Copy it once and reapply each view.
+_validation_host(array, copies) = get!(() -> Array(array), copies, array)
+_validation_host(array::SubArray, copies) =
+    view(_validation_host(parent(array), copies), parentindices(array)...)
+
 function EnsembleMCMC._kernel_synchronize(array::Reactant.AnyConcretePJRTArray, arrays...)
     _wait(array)
     foreach(_wait, arrays)
