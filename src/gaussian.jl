@@ -154,10 +154,22 @@ _explicit_shrinkage(shrinkage::Real, ::Type) = shrinkage
 _gaussian_covariance!(factor, centered, n, inflation) =
     mul!(factor, centered, transpose(centered), inflation / (n - 1), zero(eltype(factor)))
 
+function _gaussian_pivot_limits!(thresholds, factor, tolerance)
+    thresholds .= tolerance .* sqrt.(view(factor, diagind(factor)))
+    return nothing
+end
+
+function _gaussian_pivot_limits!(thresholds, factor::Matrix, tolerance)
+    for i in eachindex(thresholds)
+        thresholds[i] = tolerance * sqrt(factor[i, i])
+    end
+    return nothing
+end
+
 # Compare each conditional standard deviation to the marginal in the same units.
 function _gaussian_cholesky!(factor, thresholds, tolerance)
     all(isfinite, factor) || return false
-    isnothing(thresholds) || (thresholds .= tolerance .* sqrt.(view(factor, diagind(factor))))
+    isnothing(thresholds) || _gaussian_pivot_limits!(thresholds, factor, tolerance)
     fit = cholesky!(Symmetric(factor, :L); check=false)
     isposdef(fit) || return false
     isnothing(thresholds) && return all(isfinite, factor)
