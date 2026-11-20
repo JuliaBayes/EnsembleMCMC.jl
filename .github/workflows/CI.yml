@@ -33,9 +33,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
+        id: julia
         with:
           version: ${{ matrix.julia }}
       - uses: julia-actions/cache@v3.3.0
+        with: &julia-cache-options
+          key-prefix: julia-version=${{ steps.julia.outputs.julia-version }};
+          save-always: 'false'
+          delete-old-caches: 'false'
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
       - name: Check minimum dependency versions
@@ -55,9 +60,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
+        id: julia
         with:
           version: '1'
       - uses: julia-actions/cache@v3.3.0
+        with: *julia-cache-options
       - uses: julia-actions/julia-buildpkg@v1
       # KernelAbstractions generates methods outside the package that execute sampler code.
       - name: Run tests with coverage for generated kernels
@@ -85,9 +92,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
+        id: julia
         with:
           version: '1'
       - uses: julia-actions/cache@v3.3.0
+        with: *julia-cache-options
       - name: Install documentation environment
         run: julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'
       - name: Build documentation
@@ -117,9 +126,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
+        id: julia
         with:
           version: '1'
       - uses: julia-actions/cache@v3.3.0
+        with: *julia-cache-options
       - name: Install documentation environment
         run: julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'
       - uses: actions/download-artifact@v8
