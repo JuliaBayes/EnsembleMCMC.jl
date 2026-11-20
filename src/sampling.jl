@@ -193,7 +193,7 @@ end
 
 _coordinate_type(::AbstractVector{<:AbstractVector{T}}) where {T} = T
 _coordinate_type(initial) = promote_type(map(eltype, initial)...)
-_allocate_move(move, positions) = move
+_allocate_move(move, positions, L) = move
 _prepare_group!(move, state, group, complement, streams) = move
 _promoted_values(values::AbstractVector{T}) where {T} =
     isconcretetype(T) ? values : collect(promote(values...))
@@ -288,7 +288,7 @@ function initialize(
     executor isa KernelExecutor && throw(ArgumentError("KernelExecutor requires an initial matrix"))
     prepared = _prepare_ensemble(logdensity, initial; kwargs...)
     (; positions, logdensities, weights, walker_ids, walker_order) = prepared
-    moves = map(m -> _allocate_move(m, positions), prepared.moves)
+    moves = map(m -> _allocate_move(m, positions, eltype(logdensities)), prepared.moves)
     d, n = length(first(positions)), length(positions)
     T = eltype(first(positions))
     A = _acceptance_type(T, eltype(logdensities))

@@ -32,10 +32,10 @@ end
 
 (target::BatchedLogDensity)(x) = target.scalar(x)
 
-struct BatchWorkspace{T,L}
+struct BatchWorkspace{T,L,H}
     positions::Matrix{T}
     values::Vector{L}
-    log_hastings::Vector{T}
+    log_hastings::Vector{H}
 end
 
 function _batch_capacity(target::BatchedLogDensity, n, moves, weights)
@@ -52,9 +52,10 @@ function _batch_workspace(target::BatchedLogDensity, positions, logdensities, mo
     n = length(positions)
     capacity = _batch_capacity(target, n, moves, weights)
     d = length(first(positions))
+    T, L = eltype(first(positions)), eltype(logdensities)
     return BatchWorkspace(
-        Matrix{eltype(first(positions))}(undef, d, capacity),
-        Vector{eltype(logdensities)}(undef, capacity),
-        Vector{eltype(first(positions))}(undef, n),
+        Matrix{T}(undef, d, capacity),
+        Vector{L}(undef, capacity),
+        Vector{_log_hastings_type(T, L, moves)}(undef, n),
     )
 end

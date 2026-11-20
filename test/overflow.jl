@@ -55,6 +55,31 @@ function test_proposal_overflow(device=identity; executor=SerialExecutor())
         end
     end
 
+    @testset "Gaussian Hastings ratio with a wider target" begin
+        for (T, far) in ((Float16, 1000), (Float32, 1e20)), width in (2, 4)
+            initial = reshape(T[-1, 1, -1, far], 1, :)
+            scalar(x) = -abs2(Float64(x[1]) / width)
+            batch!(v, x) = (v .= -abs2.(Float64.(vec(x)) ./ width))
+            target = BatchedLogDensity(scalar, batch!)
+            state = initialize(Philox4x64(3), target, device(initial);
+                move=GaussianReplacementMove(), executor)
+            step!(state)
+            saved = snapshot(state)
+            x, y = Float64(initial[4]), Float64(only(Array(saved.candidates[4])))
+            # Changing only the active walker preserves its addressed draw from q=N(0,3).
+            control = copy(initial)
+            control[4] = 4
+            reference = initialize(Philox4x64(3), target, device(control);
+                move=GaussianReplacementMove(), executor)
+            step!(reference)
+            @test y == only(Array(snapshot(reference).candidates[4]))
+            @test Array(saved.candidate_logdensities)[4] == -abs2(y / width)
+            logratio = (x^2 - y^2) * (inv(width^2) - 1/6)
+            @test Array(saved.acceptance_probabilities)[4] == min(1, exp(logratio))
+            @test Array(saved.accepted)[4] == (logratio > 0)
+        end
+    end
+
     @testset "Linear proposals across the coordinate range" begin
         # These seeds put walker i in the first group with difference a - b.
         for (initial, move, seed, i, a, b) in (

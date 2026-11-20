@@ -39,7 +39,7 @@ Base.@inline function _launch_kernel(w::KernelWorkspace, kernel::F, workgroup, n
         kernel(KA.get_backend(w.positions), workgroup), ndrange, args...)
 end
 
-_kernel_move(move, initial) = move
+_kernel_move(move, initial, L) = move
 _kernel_move_supported(move) = false
 _kernel_move_supported(::Union{StretchMove,DEMove,DESnookerMove}) = true
 function _check_kernel_array(initial)
@@ -57,7 +57,7 @@ function _initialize_kernel(rng, target, initial; logdensities=nothing, kwargs..
         d, n = size(initial)
         T, L = eltype(first(host.positions)), eltype(host.logdensities)
         positions = similar(initial, T, d, n)
-        moves = map(m -> _kernel_move(m, positions), host.moves)
+        moves = map(m -> _kernel_move(m, positions, L), host.moves)
         all(_kernel_move_supported, moves) ||
             throw(ArgumentError("KernelExecutor supports only the built-in moves"))
         capacity = _batch_capacity(target, n, moves, host.weights)
@@ -71,8 +71,9 @@ function _initialize_kernel(rng, target, initial; logdensities=nothing, kwargs..
         _kernel_fill!(probabilities, 0)
         status = similar(initial, Int, 3)
         _kernel_fill!(status, 0)
+        H = _log_hastings_type(T, L, moves)
         workspace = KernelWorkspace(positions, candidates, similar(positions, d, capacity),
-            similar(logds, capacity), similar(initial, T, n), similar(initial, Int, n),
+            similar(logds, capacity), similar(initial, H, n), similar(initial, Int, n),
             similar(initial, Int, 4, n), similar(probabilities),
             similar(accepted), copy(accepted), status,
             _kernel_vector(initial, host.walker_ids), similar(initial, Int, n),

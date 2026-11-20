@@ -72,11 +72,20 @@ group_count(::_AllocatedGaussianMove) = 2
 _companion_lanes(::_AllocatedGaussianMove) = 0
 _scale_width(::_AllocatedGaussianMove, d) = d
 
-function _allocate_move(move::GaussianReplacementMove, positions)
+# Fit and solve at target precision. The half-squares need the wider exponent range.
+_gaussian_work_type(T, L) = promote_type(T, L, Float32)
+_gaussian_distance_type(T, L) = promote_type(T, L, Float64)
+
+function _log_hastings_type(T, L, moves)
+    return any(m -> m isa _AllocatedGaussianMove, moves) ? _gaussian_distance_type(T, L) : T
+end
+
+function _allocate_move(move::GaussianReplacementMove, positions, L)
     d, n = length(first(positions)), length(positions)
-    T = eltype(first(positions))
+    T = _gaussian_work_type(eltype(first(positions)), L)
+    H = _gaussian_distance_type(T, L)
     return _AllocatedGaussianMove(move.shrinkage, Vector{T}(undef, d), Vector{T}(undef, d),
-        Matrix{T}(undef, d, d), Matrix{T}(undef, d, n), (; log_hastings=Vector{T}(undef, n)))
+        Matrix{T}(undef, d, d), Matrix{T}(undef, d, n), (; log_hastings=Vector{H}(undef, n)))
 end
 
 # The fit is `anchor + scale * N(mean, L L')` with `L` in the lower triangle of `factor`.
@@ -170,10 +179,10 @@ function _gaussian_proposals!(work, move, state, group, scale, streams)
 
     # The independence correction uses the rounded candidate coordinates.
     logh = move.host.log_hastings
-    _gaussian_distances!(work, state.positions, group, move, scale) do i, distance
+    _gaussian_distances!(work, state.positions, group, move, scale, eltype(logh)) do i, distance
         logh[i] = -distance
     end
-    _gaussian_distances!(work, state.candidates, group, move, scale) do i, distance
+    _gaussian_distances!(work, state.candidates, group, move, scale, eltype(logh)) do i, distance
         logh[i] += distance
     end
     return nothing
@@ -207,7 +216,7 @@ function _gaussian_solve!(factor, work)
     return work
 end
 
-function _gaussian_distances!(store!, work, positions, group, move, scale)
+function _gaussian_distances!(store!, work, positions, group, move, scale, H=eltype(work))
     for (j, i) in enumerate(group)
         residual = view(work, j, :)
         position = positions[i]
@@ -216,7 +225,7 @@ function _gaussian_distances!(store!, work, positions, group, move, scale)
     _gaussian_solve!(move.factor, work)
     for (j, i) in enumerate(group)
         # The half-square can fit even when the full squared residual overflows.
-        store!(i, sum(x -> (x / 2) * x, view(work, j, :)))
+        store!(i, sum(x -> (H(x) / 2) * H(x), view(work, j, :)))
     end
     return nothing
 end
