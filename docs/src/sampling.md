@@ -117,28 +117,41 @@ the quantities that matter for your analysis. High acceptance alone does not
 show that the ensemble explored the target. Low acceptance or walkers that stop
 moving can reveal a poor starting region or an unsuitable move.
 
-Derive a separate key for each ensemble with `subrng`. Use fresh starting points
-for each run.
+Derive a separate key for each ensemble with `subrng`. Across runs, choose
+starting points that span plausible regions of the target. Fresh starts in one
+region can all miss the same mode.
+
+For a target uniform on `[-2, -1]` and `[1, 2]`, the right interval has probability
+one half. With the default stretch move, an ensemble confined to one interval
+stays there. Four ensembles started on the left would all estimate zero.
+Starting on both sides reveals the discrepancy.
 
 ```jldoctest independent
 using EnsembleMCMC
-using PureRNGs: Philox4x64, randn_next, subrng
+using PureRNGs: Philox4x64, rand_next, subrng
+using Statistics: mean
 
 rng = Philox4x64(19);
-logdensity(x) = -sum(abs2, x) / 2;
+logdensity(x) = 1 <= abs(only(x)) <= 2 ? 0.0 : -Inf;
+initial_points(key, side) = side .* (1 .+ first(rand_next(key, Float64, 1, 24)));
 runs = [EnsembleMCMC.sample(subrng(rng, i, 1), logdensity,
-    first(randn_next(subrng(rng, i, 2), 2, 24)), 200; warmup=100) for i in 1:4];
-length(runs)
+    initial_points(subrng(rng, i, 2), side), 200; warmup=100)
+    for (i, side) in enumerate((-1, -1, 1, 1))];
+positive_fraction(run) = vec(mean(run.positions[1, :, :] .> 0; dims=1));
+Tuple(mean(positive_fraction(run)) for run in runs)
 
 # output
 
-4
+(0.0, 0.0, 1.0, 1.0)
 ```
 
-For a chain-based diagnostic, compare a fixed walker across separate ensembles.
-For example, `[run.positions[:, 1, :] for run in runs]` contains one trajectory
-from each ensemble. Walkers within one ensemble are dependent. Do not label them
-as independent chains or add their effective sample sizes.
+Here the pooled fraction is fixed by the number of ensembles started on each side.
+
+Walkers within one ensemble are dependent. For an estimate using all walkers,
+average the quantity of interest over walkers at each sweep, as above. Use the
+time series from separate ensembles as independent chains for diagnostics, and
+account for autocorrelation when estimating Monte Carlo error. A fixed-walker
+diagnostic follows one trajectory from each ensemble.
 
 ## Reproducibility
 
