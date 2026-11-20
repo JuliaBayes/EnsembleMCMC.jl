@@ -71,15 +71,17 @@ function _initialize_kernel(rng, target, initial; logdensities=nothing, kwargs..
         _kernel_fill!(accepted, false)
         probabilities = similar(initial, _acceptance_type(T, L), n)
         _kernel_fill!(probabilities, 0)
-        status = similar(initial, Int, 3)
-        _kernel_fill!(status, 0)
+        host_status = zeros(Int, 4)
+        host_status[_POSITION_EXPONENT] = _position_exponent(maximum(x -> maximum(abs, x), host.positions))
+        # CPU status must support atomic updates even for sparse coordinate storage.
+        status = KA.get_backend(initial) isa KA.CPU ? copy(host_status) : _kernel_vector(initial, host_status)
         H = _log_hastings_type(T, L, moves)
         workspace = KernelWorkspace(positions, candidates, similar(positions, d, capacity),
             similar(logds, capacity), similar(initial, H, n), similar(initial, Int, n),
             similar(initial, Int, 4, n), similar(probabilities),
             similar(accepted), copy(accepted), status,
             _kernel_vector(initial, host.walker_ids), similar(initial, Int, n),
-            zeros(Int, 3), _kernel_execution(positions))
+            host_status, _kernel_execution(positions))
         candidate_logds = copy(logds)
         _kernel_synchronize(positions, candidates, logds, candidate_logds, accepted,
             probabilities, status)
@@ -141,6 +143,35 @@ function _evaluate_group!(::KernelExecutor, state, move::DESnookerMove, streams,
     return nothing
 end
 
+_purpose_key_type(keys::AbstractVector) = eltype(keys)
+
+# Native PureRNGs normals use an open midpoint grid. Its largest magnitude is
+# below 8.21 in Float64 and 5.30 in Float32 (Float16 rounds the Float32 draw).
+_normal_bound(::Type, ::Type{T}) where {T} = floatmax(T)
+const _BoundedNormalRNG = Union{
+    PureRNGs.Philox2x32,PureRNGs.Philox4x32,PureRNGs.Philox2x64,PureRNGs.Philox4x64,
+    PureRNGs.Threefry2x32,PureRNGs.Threefry4x32,PureRNGs.Threefry2x64,PureRNGs.Threefry4x64,
+    PureRNGs.ChaCha,PureRNGs.PCG4D,
+}
+_normal_bound(::Type{<:_BoundedNormalRNG}, ::Type{T}) where {T} = T(16)
+
+_scale_bound(move::StretchMove, keys) = move.scale
+function _scale_bound(move::DEMove{T}, keys) where {T}
+    return move.gamma0 * (one(T) + move.sigma * _normal_bound(_purpose_key_type(keys), T))
+end
+
+function _bounded_linear_group!(w, move, keys)
+    T = eltype(w.positions)
+    T <: _HardwareFloat || return false
+    limit = exponent(floatmax(T))
+    scale = _scale_bound(move, keys)
+    # |x| <= 2^b and |scale| <= 2^s give |origin + scale*(a-b)| <= 2^(b+s+2),
+    # with s >= 0. Reserve the next group against the potential accepted growth.
+    bound = isfinite(scale) ? w.host_status[_POSITION_EXPONENT] + max(0, last(frexp(scale))) + 2 : limit + 1
+    w.host_status[_POSITION_EXPONENT] = min(bound, limit + 1)
+    return bound <= limit
+end
+
 function _evaluate_group!(::KernelExecutor, state, move::Union{StretchMove,DEMove}, keys, group, complement)
     w = state.batch_workspace
     n = length(group)
@@ -151,7 +182,12 @@ function _evaluate_group!(::KernelExecutor, state, move::Union{StretchMove,DEMov
     _launch_kernel(w, kernel, threads, count, w.candidates, w.positions,
         w.batchpositions, w.values, w.controls, w.uniforms, w.logh, w.indices, state.accepted,
         w.permutation, w.walker_ids, group, complement, move, keys)
-    w.host_status[1] = n
+    if _bounded_linear_group!(w, move, keys)
+        w.host_status[1] = n
+    else
+        linear = (w.candidates, w.controls, state.candidate_logdensities, state.acceptance_probabilities)
+        _compact!(w, 1:n, linear)
+    end
     return nothing
 end
 
@@ -159,15 +195,14 @@ function _evaluate_batch!(w::KernelWorkspace, state, group, streams, move)
     n = w.host_status[1]
     iszero(n) && return nothing
     fixed = !isnothing(state.logdensity.batch_size)
+    if move isa Union{StretchMove,DEMove} && n == length(group)
+        return _call_batch!(w, state, n, fixed)
+    end
     width = fixed ? length(w.values) : length(group)
     count = _kernel_scalar(w.execution, n)
     _launch_kernel(w, _gather_kernel!, (32, 4), (size(w.positions, 1), width),
         w.batchpositions, w.values, w.candidates, w.controls, w.indices, count)
     return _call_batch!(w, state, n, fixed)
-end
-
-function _evaluate_batch!(w::KernelWorkspace, state, group, streams, ::Union{StretchMove,DEMove})
-    return _call_batch!(w, state, length(group), !isnothing(state.logdensity.batch_size))
 end
 
 function _call_batch!(w, state, n, fixed)
@@ -177,9 +212,9 @@ function _call_batch!(w, state, n, fixed)
     return nothing
 end
 
-function _compact!(w::KernelWorkspace, slots)
+function _compact!(w::KernelWorkspace, slots, linear=nothing)
     # A fixed width compiles the kernel once for all ensemble sizes.
-    _launch_kernel(w, _compact_kernel!, _SCAN_WIDTH, _SCAN_WIDTH, w.indices, w.status, w.valid, slots)
+    _launch_kernel(w, _compact_kernel!, _SCAN_WIDTH, _SCAN_WIDTH, w.indices, w.status, w.valid, slots, linear)
     copyto!(w.host_status, 1, w.status, 1, 1)
     _kernel_synchronize(w.status)
     return nothing
@@ -190,11 +225,10 @@ function _commit_group!(state, group, w::KernelWorkspace, move)
     n > 0 && _launch_kernel(w, _accept_commit_kernel!, 64, length(group), w.positions, w.candidates,
         state.logdensities, state.candidate_logdensities, state.accepted,
         state.acceptance_probabilities, w.invalid, w.controls, w.uniforms, w.indices, w.logh,
-        w.values, _kernel_scalar(w.execution, n), _hastings_scale(move))
+        w.values, _kernel_scalar(w.execution, n), _hastings_scale(move), w.status)
     return nothing
 end
 
-# Linear moves use one explicit status synchronization per sweep.
 function _accepted_count(state, w::KernelWorkspace)
     _launch_kernel(w, _sweep_status_kernel!, _SCAN_WIDTH, _SCAN_WIDTH,
         w.status, state.accepted, w.invalid)
@@ -255,8 +289,11 @@ end
 function _synchronize!(state, positions, logdensities, workspace::KernelWorkspace)
     return _with_kernel_device(workspace.positions) do
         _synchronize!(state, positions, logdensities, nothing)
+        largest = _host_scalar(_kernel_execute(workspace.execution, maximum, abs, workspace.positions))
+        workspace.host_status[_POSITION_EXPONENT] = _position_exponent(largest)
+        _kernel_copyto!(workspace.status, workspace.host_status)
         _kernel_synchronize(workspace.positions, workspace.candidates, state.logdensities,
-            state.candidate_logdensities, state.accepted, state.acceptance_probabilities)
+            state.candidate_logdensities, state.accepted, state.acceptance_probabilities, workspace.status)
         state
     end
 end

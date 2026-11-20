@@ -159,6 +159,7 @@ function propose!(candidate, move::StretchMove, current, walker_idx::Integer,
     if !all(isfinite, candidate)
         @. candidate = _linear_candidate(current[companion_idx], stretch,
             current[walker_idx], current[companion_idx])
+        all(isfinite, candidate) || return nothing
     end
     return (length(candidate) - 1) * log(stretch)
 end
@@ -171,6 +172,7 @@ function propose!(candidate, move::DEMove, current, walker_idx::Integer,
     if !all(isfinite, candidate)
         @. candidate = _linear_candidate(current[walker_idx], gamma,
             current[companion_a], current[companion_b])
+        all(isfinite, candidate) || return nothing
     end
     return zero(move.gamma0)
 end

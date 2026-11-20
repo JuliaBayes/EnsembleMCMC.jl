@@ -140,6 +140,8 @@ end
 end
 
 # XLA stores primitive words. The template preserves the engine and round count.
+EnsembleMCMC._purpose_key_type((template, _)::Tuple) = typeof(template)
+
 function EnsembleMCMC._purpose_buffer(positions::Reactant.ConcretePJRTArray, key::Tuple)
     template = first(key)
     words = PureRNGs.rngkey(template)

@@ -170,7 +170,9 @@ move selected for the latest sweep; `sweep_count` counts completed sweeps.
 Before the first sweep, both scalars and all counts are zero, and `accepted`
 is false for every walker. `candidates`, `candidate_logdensities`, and
 `acceptance_probabilities` describe the last attempted transition, including
-rejections; a NaN candidate density is recorded as -Inf. Before stepping or after
+rejections. A NaN candidate density is recorded as -Inf. An unrepresentable
+Stretch or DE candidate retains its coordinates and receives -Inf without
+evaluating the target. Before stepping or after
 synchronization they describe the current points with zero acceptance
 probabilities and `move_index == 0`.
 
@@ -586,8 +588,12 @@ function _evaluate!(state, move, streams, i, complement)
     log_hastings = propose!(state.candidates[i], move, state.positions, i,
         complement, streams, state.draw_buffers.slots[i])
     if isnothing(log_hastings)
-        copyto!(state.candidates[i], state.positions[i])
-        state.candidate_logdensities[i] = state.logdensities[i]
+        if move isa Union{StretchMove,DEMove}
+            state.candidate_logdensities[i] = -Inf
+        else
+            copyto!(state.candidates[i], state.positions[i])
+            state.candidate_logdensities[i] = state.logdensities[i]
+        end
         state.acceptance_probabilities[i] = 0
         state.accepted[i] = false
         return nothing

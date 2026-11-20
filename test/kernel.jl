@@ -256,7 +256,7 @@ function test_kernel_executor(device=copy)
             slots = 4:(n + 3)
             valid = first(rand_next(Philox4x64(n), Bool, last(slots)))
             indices, status = device(zeros(Int, n)), device(zeros(Int, 3))
-            EnsembleMCMC._compact_kernel!(backend, width)(indices, status, device(valid), slots;
+            EnsembleMCMC._compact_kernel!(backend, width)(indices, status, device(valid), slots, nothing;
                 ndrange=width)
             count = Array(status)[1]
             Array(indices)[1:count] == filter(i -> valid[i], slots)

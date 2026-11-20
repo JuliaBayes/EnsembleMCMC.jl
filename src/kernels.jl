@@ -1,5 +1,20 @@
 using KernelAbstractions: @groupsize, @localmem, @synchronize
 
+const _POSITION_EXPONENT = 4
+
+# Ignore small coordinates when recording range increases in the sweep status.
+_small_exponent(::Type{Float16}) = 4
+_small_exponent(::Type{T}) where {T} = 8
+_position_exponent(x) = 0
+_position_exponent(x::T) where {T<:_HardwareFloat} = max(_small_exponent(T), last(frexp(x)))
+_record_range!(status, x) = nothing
+@inline function _record_range!(status, x::T) where {T<:_HardwareFloat}
+    if x > ldexp(one(T), _small_exponent(T))
+        KA.@atomic :monotonic max(status[_POSITION_EXPONENT], last(frexp(x)))
+    end
+    return nothing
+end
+
 KA.@kernel function _history_kernel!(positions, logdensities, accepted,
     current_positions, current_logdensities, current_accepted, sweep)
     i = @index(Global, Linear)
@@ -166,14 +181,30 @@ end
 # Upper bound for the workgroup size of the single-group scan and reduction kernels.
 const _SCAN_WIDTH = 256
 
+_valid_slot!(valid, j, ::Nothing) = valid[j]
+@inline function _valid_slot!(valid, j, linear::Tuple)
+    candidates, controls, logdensities, probabilities = linear
+    walker = controls[1, j]
+    finite = true
+    for coordinate in axes(candidates, 1)
+        finite &= isfinite(candidates[coordinate, walker])
+    end
+    valid[j] = finite
+    if !finite
+        logdensities[walker] = -Inf
+        probabilities[walker] = 0
+    end
+    return finite
+end
+
 # One workgroup: each item scans a contiguous chunk, so the indices stay ascending.
-KA.@kernel function _compact_kernel!(indices, status, valid, slots)
+KA.@kernel function _compact_kernel!(indices, status, valid, slots, linear)
     counts = @localmem Int (_SCAN_WIDTH,)
     t = @index(Local, Linear)
     chunk = cld(length(slots), @groupsize()[1])
     count = 0
     for j in ((t - 1) * chunk + 1):min(t * chunk, length(slots))
-        count += valid[slots[j]]
+        count += _valid_slot!(valid, slots[j], linear)
     end
     @inbounds counts[t] = count
     @synchronize
@@ -224,6 +255,7 @@ KA.@kernel function _accept_commit_kernel!(
     values,
     n,
     scale,
+    status,
 )
     k = @index(Global, Linear)
     if k <= n
@@ -241,9 +273,13 @@ KA.@kernel function _accept_commit_kernel!(
         accept = !bad && @inbounds(uniforms[j]) < probability
         @inbounds accepted[walker] = accept
         if accept
+            largest = zero(eltype(positions))
             for coordinate = 1:size(positions, 1)
-                @inbounds positions[coordinate, walker] = candidates[coordinate, walker]
+                value = @inbounds candidates[coordinate, walker]
+                largest = max(largest, abs(value))
+                @inbounds positions[coordinate, walker] = value
             end
+            _record_range!(status, largest)
             @inbounds logdensities[walker] = candidate_logdensity
         end
     end

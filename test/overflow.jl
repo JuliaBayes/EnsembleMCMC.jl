@@ -166,9 +166,59 @@ function test_proposal_overflow(device=identity; executor=SerialExecutor())
         @test Array(saved.acceptance_probabilities)[2] ≈ min(1, exp(logratio))
     end
 
+    @testset "Unrepresentable linear candidates skip the target" begin
+        initial = Float16[-30000 -10000 10000 30000]
+        key = Philox4x64(6)
+        finite_batches = Vector{Vector{Float16}}()
+        for width in (nothing, 3)
+            calls = Vector{Vector{Float16}}()
+            function batch!(v, x)
+                push!(calls, vec(Array(x)))
+                all(isfinite, last(calls)) || error("nonfinite batch input")
+                fill!(v, 0.0)
+            end
+            target = BatchedLogDensity(x -> 0.0, batch!; batch_size=width)
+            start = isnothing(width) ? initial : initial ./ Float16(256)
+            state = initialize(key, target, device(start); executor)
+            isnothing(width) || synchronize!(state, device(initial), zeros(4))
+            saved = current_state(step!(state))
+            bad = .!isfinite.(map(x -> only(Array(x)), saved.candidates))
+            @test count(bad) == 1
+            @test map(x -> only(Array(x)), saved.positions)[bad] == vec(initial)[bad]
+            @test all(==(-Inf), Array(saved.candidate_logdensities)[bad])
+            @test all(iszero, Array(saved.acceptance_probabilities)[bad])
+            @test !any(Array(saved.accepted)[bad])
+            if isnothing(width)
+                @test sort(length.(calls)) == [1, 2]
+                append!(finite_batches, calls)
+            else
+                @test calls == [vcat(batch, fill(first(batch), width-length(batch))) for batch in finite_batches]
+            end
+        end
+    end
+
+    @testset "Accepted linear proposals can outgrow their initial range" begin
+        batch!(v, x) = (all(isfinite, x) || error("nonfinite batch input"); fill!(v, 0.0))
+        state = initialize(Philox4x64(77), BatchedLogDensity(x -> 0.0, batch!),
+            device(Float16[-1 0 1 2]); move=DEMove(gamma0=4, sigma=0), executor)
+        overflow = false
+        for _ in 1:16
+            saved = current_state(step!(state))
+            overflow |= any(x -> !isfinite(only(Array(x))), saved.candidates)
+        end
+        @test overflow
+        @test all(x -> isfinite(only(Array(x))), current_state(state).positions)
+    end
+
     @testset "Zero and unrepresentable linear displacements" begin
-        scalar(x) = -abs2(x[1] / 1e308) / 2
-        batch!(v, x) = (v .= -abs2.(vec(x) ./ 1e308) ./ 2)
+        function scalar(x)
+            isfinite(only(x)) || error("nonfinite scalar input")
+            return -abs2(x[1] / 1e308) / 2
+        end
+        function batch!(v, x)
+            all(isfinite, x) || error("nonfinite batch input")
+            v .= -abs2.(vec(x) ./ 1e308) ./ 2
+        end
         target = executor isa KernelExecutor ? BatchedLogDensity(scalar, batch!) : scalar
         tiny = nextfloat(0.0)
         # Walker 4 picks the opposite-sign companions and its jitter rounds the factor to zero.
