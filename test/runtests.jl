@@ -185,10 +185,11 @@ end
         step!(state)
         @test calls[] == 2length(initial)
         calls[] = 0
-        coincident = [[0.0], [0.0], [0.0], [1.0]]
+        coincident = [[0.0], [0.125], [0.0], [0.125]]
         degenerate = initialize(test_rng(), target, coincident; move=DESnookerMove())
         step!(degenerate)
-        @test calls[] < 2length(coincident)
+        @test length(coincident) < calls[] < 2length(coincident)
+        @test current_state(degenerate).positions != coincident
         @test count(!, current_state(degenerate).accepted) > 0
     end
 

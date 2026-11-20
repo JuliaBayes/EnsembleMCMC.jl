@@ -147,7 +147,7 @@ function test_kernel_executor(device=copy)
         end
         widths = Int[]
         flat = BatchedLogDensity(_ -> 0.0, (v, x) -> (push!(widths, size(x, 2)); fill!(v, 0)))
-        duplicates = reshape([0.0, 0, 0, 0, 0, 0, 0, 1], 1, :)
+        duplicates = reshape([0.0, 0, 0, 0, 0, 0, 0.25, 0.5], 1, :)
         expected = sample!(initialize(test_rng(), flat, duplicates; move=DESnookerMove()), 1)
         expected_widths = copy(widths)
         empty!(widths)
@@ -156,6 +156,9 @@ function test_kernel_executor(device=copy)
         draws = sample!(degenerate, 1)
         transition = snapshot(degenerate)
         rejected = .!Array(transition.accepted)
+        @test any(rejected)
+        @test reduce(hcat, Array.(transition.positions)) != duplicates
+        @test 1 in widths && length(widths) < 4  # Partial and empty two-walker groups.
         @test all(iszero, Array(transition.acceptance_probabilities)[rejected])
         @test Array.(transition.candidates[rejected]) == Array.(transition.positions[rejected])
         @test widths == expected_widths

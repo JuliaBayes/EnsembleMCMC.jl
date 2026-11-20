@@ -153,10 +153,12 @@ end
         test_rng(), target, [[-1.0], [1.0], [2.0], [3.0]]; move=DEMove())
     step!(state, 16)
     @test all(isfinite, current_state(state).logdensities)
-    coincident = [[0.0], [0.0], [0.0], [1.0]]
+    coincident = [[0.0], [0.125], [0.0], [0.125]]
     snooker = initialize(test_rng(), gaussian_logdensity, coincident; move=DESnookerMove())
     step!(snooker)
     transition = current_state(snooker)
+    @test transition.positions != coincident
+    @test any(!, transition.accepted)
     @test transition.candidate_logdensities == gaussian_logdensity.(transition.candidates)
     @test all(iszero, transition.acceptance_probabilities[.!transition.accepted])
 end

@@ -26,12 +26,13 @@
             push!(widths, size(positions, 2))
             values .= gaussian_logdensity.(eachcol(positions))
         end
-        initial = Float32[0 0 0 1]
+        initial = Float32[0 0.125 0 0.125]
         state = initialize(test_rng(), BatchedLogDensity(scalar, batch!), initial;
             move=DESnookerMove())
         @test scalar_calls[] == size(initial, 2)
         step!(state)
         @test scalar_calls[] == size(initial, 2)
+        @test reduce(hcat, current_state(state).positions) != initial
         @test !isempty(widths)
         @test sum(widths) < size(initial, 2)
         @test all(>(0), widths)
