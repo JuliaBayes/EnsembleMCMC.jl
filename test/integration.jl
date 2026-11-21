@@ -12,6 +12,24 @@
     @test_throws ArgumentError validate_positions(nonfinite)
 end
 
+@testset "Float16 affine rank across population sizes" begin
+    for n in (1023, 1024, 1025)
+        positions = reshape(Float16.(isodd.(1:n)), 1, :)
+        @test validate_positions(positions) === nothing
+        @test_throws ArgumentError validate_positions(vcat(positions, positions))
+    end
+end
+
+@testset "Affine rank for a wide ensemble" begin
+    for (T, aspect) in ((Float32, 2f0^-16), (Float64, 2.0^-44), (BigFloat, 32 * eps(BigFloat)))
+        corners = T[-1 1 -1 1; -aspect -aspect aspect aspect]
+        positions = repeat(corners; outer=(1, 256))
+        @test_logs (:warn, r"nearly degenerate") validate_positions(positions)
+        positions[2, :] .= positions[1, :]
+        @test_throws ArgumentError validate_positions(positions)
+    end
+end
+
 @testset "Position validation across numeric scales" begin
     for positions in (
         reshape([-1e308, 1e308], 1, :),
@@ -135,10 +153,12 @@ end
         test_rng(), target, [[-1.0], [1.0], [2.0], [3.0]]; move=DEMove())
     step!(state, 16)
     @test all(isfinite, current_state(state).logdensities)
-    coincident = [[0.0], [0.0], [0.0], [1.0]]
+    coincident = [[0.0], [0.125], [0.0], [0.125]]
     snooker = initialize(test_rng(), gaussian_logdensity, coincident; move=DESnookerMove())
     step!(snooker)
     transition = current_state(snooker)
+    @test transition.positions != coincident
+    @test any(!, transition.accepted)
     @test transition.candidate_logdensities == gaussian_logdensity.(transition.candidates)
     @test all(iszero, transition.acceptance_probabilities[.!transition.accepted])
 end

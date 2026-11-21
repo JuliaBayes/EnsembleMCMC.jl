@@ -17,6 +17,23 @@ _owner(array::Reactant.ConcretePJRTArray) = array
 _owner(array) = _owner(parent(array))
 _wait(array) = wait(_owner(array))
 
+function EnsembleMCMC.validate_positions(positions::Reactant.AnyConcretePJRTArray{<:Any,2})
+    return EnsembleMCMC.validate_positions(Array(positions))
+end
+
+function EnsembleMCMC.validate_positions(
+    positions::AbstractVector{<:Reactant.AnyConcretePJRTArray{<:Any,1}},
+)
+    Base.require_one_based_indexing(positions)
+    copies = IdDict{Any,Array}()
+    return EnsembleMCMC.validate_positions(map(p -> _validation_host(p, copies), positions))
+end
+
+# Borrowed columns can share one device matrix. Copy it once and reapply each view.
+_validation_host(array, copies) = get!(() -> Array(array), copies, array)
+_validation_host(array::SubArray, copies) =
+    view(_validation_host(parent(array), copies), parentindices(array)...)
+
 function EnsembleMCMC._kernel_synchronize(array::Reactant.AnyConcretePJRTArray, arrays...)
     _wait(array)
     foreach(_wait, arrays)
@@ -33,6 +50,14 @@ function EnsembleMCMC._kernel_fill!(array::Reactant.ConcretePJRTArray, value)
 end
 
 _copyto!(dest, src) = (dest .= reshape(src, size(dest)))
+
+function _copyto!(dest::SubArray{T,1,<:AbstractMatrix,<:Tuple{Base.Slice,Int}}, src) where {T}
+    # Reactant can lower a singleton view broadcast to a CartesianIndex-based linear update.
+    # Assign the full column through its matrix so the update stays two-dimensional.
+    column = last(parentindices(dest))
+    parent(dest)[:, column:column] = reshape(src, length(dest), 1)
+    return nothing
+end
 
 function EnsembleMCMC._kernel_copyto!(dest::Reactant.AnyConcretePJRTArray, src)
     source = Array{eltype(dest)}(src)
@@ -79,6 +104,9 @@ struct ReactantExecution{C,D}
     history::Base.RefValue{Any}
 end
 
+# PJRT CUDA can exhaust launch resources with larger shuffle workgroups.
+EnsembleMCMC._shuffle_workgroup_limit(::ReactantExecution) = 128
+
 function EnsembleMCMC._kernel_execution(initial::Reactant.ConcretePJRTArray)
     return ReactantExecution(
         Reactant.XLA.client(initial),
@@ -120,6 +148,8 @@ end
 end
 
 # XLA stores primitive words. The template preserves the engine and round count.
+EnsembleMCMC._purpose_key_type((template, _)::Tuple) = typeof(template)
+
 function EnsembleMCMC._purpose_buffer(positions::Reactant.ConcretePJRTArray, key::Tuple)
     template = first(key)
     words = PureRNGs.rngkey(template)
@@ -179,12 +209,15 @@ function EnsembleMCMC._gaussian_covariance!(
     return factor
 end
 
-function EnsembleMCMC._gaussian_cholesky!(factor::Reactant.TracedRArray)
+function EnsembleMCMC._gaussian_cholesky!(factor::Reactant.TracedRArray, thresholds, tolerance)
     # Reactant's cholesky! wrapper allocates upper factors. The move needs an
     # in-place lower factor and a validity flag, which this device operation supplies.
     finite = all(isfinite, factor)
+    limits = isnothing(thresholds) ? nothing : tolerance .* sqrt.(diag(factor))
     factor .= tril(Reactant.Ops.cholesky(factor; lower = true))
-    return finite & all(isfinite, factor) & all(>(0), diag(factor))
+    pivots = diag(factor)
+    valid = isnothing(limits) ? all(>(0), pivots) : all(pivots .> limits)
+    return finite & all(isfinite, factor) & valid
 end
 
 end

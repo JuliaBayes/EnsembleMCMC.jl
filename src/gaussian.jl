@@ -6,15 +6,16 @@ complement, with the independence-proposal Hastings correction.
 
 With the default `shrinkage=:auto`, the proposal covariance is `(1 + d/m) * C`,
 where `C` is the unbiased sample covariance of the `m` complement walkers. This
-is affine invariant when the fit succeeds. The factor `1 + d/m` widens the
-directions that a small complement underestimates. If `m <= d` or `C` is not
-positive definite, the move uses `shrinkage=1/2` for that group. This isotropic
-fallback is not affine invariant.
+is affine invariant when the fit succeeds. The factor `1 + d/m` multiplies every
+covariance eigenvalue equally. If `m <= d` or `C` is not numerically positive
+definite, the move uses `shrinkage=1/2` for that group.
 
-A finite `shrinkage` in `[0, 1]` shrinks `C` toward `tr(C)/d * I` instead. This
-is not scale invariant: on targets with very different scales or strong
-correlations, a positive value makes the proposal too wide and acceptance
-collapses. `shrinkage=0` uses `C` unchanged.
+A finite `shrinkage` in `[0, 1]` shrinks `C` toward `tr(C)/d * I`.
+Positive shrinkage preserves translations, rotations and common rescaling.
+Rescaling coordinates separately can change the proposal and reduce acceptance.
+`shrinkage=0` uses `C` unchanged.
+For an unregularized fit, each Cholesky pivot must exceed its marginal
+standard deviation times `sqrt(d * eps(T))` in the fit precision `T`.
 
 Uses two groups and requires at least `max(2d, 4)` walkers, or `2(d+1)` when
 `shrinkage=0`. More walkers give the covariance fit more points. Acceptance
@@ -68,34 +69,51 @@ struct _FittedGaussianMove{M,S} <: AbstractEnsembleMove
     valid::Bool
 end
 
+# Half the log correction accommodates differences up to twice the largest finite target value.
+_hastings_scale(::_FittedGaussianMove) = Val(2)
 group_count(::_AllocatedGaussianMove) = 2
 _companion_lanes(::_AllocatedGaussianMove) = 0
 _scale_width(::_AllocatedGaussianMove, d) = d
 
-function _allocate_move(move::GaussianReplacementMove, positions)
+# Fit and solve at target precision. The half-squares need the wider exponent range.
+_gaussian_work_type(T, L) = promote_type(T, L, Float32)
+_gaussian_distance_type(T, L) = promote_type(T, L, Float64)
+
+function _log_hastings_type(T, L, moves)
+    return any(m -> m isa _AllocatedGaussianMove, moves) ? _gaussian_distance_type(T, L) : T
+end
+
+function _allocate_move(move::GaussianReplacementMove, positions, L)
     d, n = length(first(positions)), length(positions)
-    T = eltype(first(positions))
+    T = _gaussian_work_type(eltype(first(positions)), L)
+    H = _gaussian_distance_type(T, L)
     return _AllocatedGaussianMove(move.shrinkage, Vector{T}(undef, d), Vector{T}(undef, d),
-        Matrix{T}(undef, d, d), Matrix{T}(undef, d, n), (; log_hastings=Vector{T}(undef, n)))
+        Matrix{T}(undef, d, d), Matrix{T}(undef, d, n), (; log_hastings=Vector{H}(undef, n)))
 end
 
 # The fit is `anchor + scale * N(mean, L L')` with `L` in the lower triangle of `factor`.
-function _fit_gaussian!(anchor, mean, factor, scratch, n, shrinkage, execution=nothing)
+# A complement occupies only part of the scratch matrix, leaving its last column for thresholds.
+function _fit_gaussian!(anchor, mean, factor, scratch, n, shrinkage, execution=nothing,
+    thresholds=similar(mean), center!::F = _center_gaussian!) where {F}
     T = eltype(mean)
     d = length(mean)
     centered = view(scratch, :, 1:n)
-    scale = _kernel_execute(execution, _center_gaussian!, anchor, centered)
+    scale = _kernel_execute(execution, center!, anchor, centered)
     host_scale = _host_scalar(scale)
     isfinite(host_scale) && host_scale > zero(T) || return scale, false
     valid = _kernel_execute(execution, _standardize_gaussian!, mean, centered, scale, n)
     _host_scalar(valid) || return scale, false
-    if shrinkage isa Symbol
-        n > d && _gaussian_cholesky!(factor, centered, n, 1 + T(d) / n, execution) && return scale, true
+    tolerance = sqrt(d * eps(T))
+    if shrinkage isa Symbol && n > d
+        _kernel_execute(execution, _gaussian_covariance!, factor, centered, n, 1 + T(d) / n)
+        valid = _kernel_execute(execution, _gaussian_cholesky!, factor, thresholds, tolerance)
+        _host_scalar(valid) && return scale, true
     end
     s = _explicit_shrinkage(shrinkage, T)
     _kernel_execute(execution, _gaussian_covariance!, factor, centered, n, one(T))
     _kernel_execute(execution, _shrink_gaussian!, factor, s)
-    return scale, _host_scalar(_kernel_execute(execution, _gaussian_cholesky!, factor))
+    pivots = iszero(s) ? thresholds : nothing
+    return scale, _host_scalar(_kernel_execute(execution, _gaussian_cholesky!, factor, pivots, tolerance))
 end
 
 function _center_gaussian!(anchor, centered)
@@ -103,6 +121,13 @@ function _center_gaussian!(anchor, centered)
     anchor .= view(centered, :, 1)
     centered .-= anchor
     return maximum(abs, centered)
+end
+
+function _midrange_gaussian!(anchor, points)
+    # Half each endpoint before summing so the midpoint and both offsets fit.
+    anchor .= vec(minimum(points; dims=2)) ./ 2 .+ vec(maximum(points; dims=2)) ./ 2
+    points .-= anchor
+    return maximum(abs, points)
 end
 
 function _standardize_gaussian!(mean, centered, scale, n)
@@ -129,32 +154,66 @@ _explicit_shrinkage(shrinkage::Real, ::Type) = shrinkage
 _gaussian_covariance!(factor, centered, n, inflation) =
     mul!(factor, centered, transpose(centered), inflation / (n - 1), zero(eltype(factor)))
 
-function _gaussian_cholesky!(factor, centered, n, inflation, execution=nothing)
-    _kernel_execute(execution, _gaussian_covariance!, factor, centered, n, inflation)
-    return _host_scalar(_kernel_execute(execution, _gaussian_cholesky!, factor))
+function _gaussian_pivot_limits!(thresholds, factor, tolerance)
+    thresholds .= tolerance .* sqrt.(view(factor, diagind(factor)))
+    return nothing
 end
 
-function _gaussian_cholesky!(factor)
-    all(isfinite, factor) || return false
-    fit = cholesky!(Symmetric(factor, :L); check=false)
-    return isposdef(fit) && all(isfinite, factor)
+function _gaussian_pivot_limits!(thresholds, factor::Matrix, tolerance)
+    for i in eachindex(thresholds)
+        thresholds[i] = tolerance * sqrt(factor[i, i])
+    end
+    return nothing
 end
+
+# Compare each conditional standard deviation to the marginal in the same units.
+function _gaussian_cholesky!(factor, thresholds, tolerance)
+    all(isfinite, factor) || return false
+    isnothing(thresholds) || _gaussian_pivot_limits!(thresholds, factor, tolerance)
+    fit = cholesky!(Symmetric(factor, :L); check=false)
+    isposdef(fit) || return false
+    isnothing(thresholds) && return all(isfinite, factor)
+    # A nonfinite lower entry also spoils its row's diagonal in the Cholesky update.
+    return _gaussian_pivots_resolved(factor, thresholds)
+end
+
+_gaussian_pivots_resolved(factor, thresholds) = mapreduce(
+    (p, limit) -> isfinite(p) && p > limit, &, view(factor, diagind(factor)), thresholds)
+_gaussian_pivots_resolved(factor::Matrix, thresholds) =
+    all(i -> isfinite(factor[i, i]) && factor[i, i] > thresholds[i], eachindex(thresholds))
 
 _prepare_group!(move::_AllocatedGaussianMove, state, group, complement, streams) =
     _prepare_gaussian_group!(state.batch_workspace, move, state, group, only(complement), streams)
 
-function _prepare_gaussian_group!(workspace, move, state, group, complement, streams)
-    for (j, i) in enumerate(complement)
-        copyto!(view(move.scratch, :, j), state.positions[i])
+function _fit_gaussian_group!(gather!::F, move, n, execution=nothing) where {F}
+    thresholds = view(move.scratch, :, size(move.scratch, 2))
+    args = (move.anchor, move.mean, move.factor, move.scratch, n, move.shrinkage, execution, thresholds)
+    gather!()
+    scale, valid = _fit_gaussian!(args...)
+    if !valid && isinf(_host_scalar(scale))
+        gather!()
+        return _fit_gaussian!(args..., _midrange_gaussian!)
     end
-    scale, valid = _fit_gaussian!(move.anchor, move.mean, move.factor, move.scratch,
-        length(complement), move.shrinkage)
+    return scale, valid
+end
+
+function _prepare_gaussian_group!(workspace, move, state, group, complement, streams)
+    scale, valid = _fit_gaussian_group!(move, length(complement)) do
+        for (j, i) in enumerate(complement)
+            copyto!(view(move.scratch, :, j), state.positions[i])
+        end
+    end
     if valid
         # Store each coordinate contiguously across the active walkers.
         work = reshape(view(move.scratch, :, 1:length(group)), length(group), length(move.mean))
         _gaussian_proposals!(work, move, state, group, scale, streams)
     end
     return _FittedGaussianMove(move, scale, valid)
+end
+
+@inline function _gaussian_position(anchor, scale, offset)
+    candidate = anchor + scale * offset
+    return isfinite(candidate) ? candidate : fma(scale, offset, anchor)
 end
 
 function _gaussian_proposals!(work, move, state, group, scale, streams)
@@ -165,15 +224,15 @@ function _gaussian_proposals!(work, move, state, group, scale, streams)
     for (j, i) in enumerate(group)
         noise = view(work, j, :)
         candidate = state.candidates[i]
-        @. candidate = move.anchor + scale * (move.mean + noise)
+        @. candidate = _gaussian_position(move.anchor, scale, move.mean + noise)
     end
 
     # The independence correction uses the rounded candidate coordinates.
     logh = move.host.log_hastings
-    _gaussian_distances!(work, state.positions, group, move, scale) do i, distance
+    _gaussian_distances!(work, state.positions, group, move, scale, eltype(logh)) do i, distance
         logh[i] = -distance
     end
-    _gaussian_distances!(work, state.candidates, group, move, scale) do i, distance
+    _gaussian_distances!(work, state.candidates, group, move, scale, eltype(logh)) do i, distance
         logh[i] += distance
     end
     return nothing
@@ -207,7 +266,14 @@ function _gaussian_solve!(factor, work)
     return work
 end
 
-function _gaussian_distances!(store!, work, positions, group, move, scale)
+@inline function _gaussian_residual(x, anchor, scale)
+    difference = x - anchor
+    return isfinite(difference) ? difference / scale : x / scale - anchor / scale
+end
+
+_gaussian_distance(residual, ::Type{H}) where {H} = sum(x -> abs2(H(x) / 2), residual)
+
+function _gaussian_distances!(store!, work, positions, group, move, scale, ::Type{H}=eltype(work)) where {H}
     for (j, i) in enumerate(group)
         residual = view(work, j, :)
         position = positions[i]
@@ -215,8 +281,16 @@ function _gaussian_distances!(store!, work, positions, group, move, scale)
     end
     _gaussian_solve!(move.factor, work)
     for (j, i) in enumerate(group)
-        # The half-square can fit even when the full squared residual overflows.
-        store!(i, sum(x -> (x / 2) * x, view(work, j, :)))
+        residual = view(work, j, :)
+        distance = _gaussian_distance(residual, H)
+        if !isfinite(distance)
+            # Subtracting finite coordinates can overflow before division by the scale.
+            position = positions[i]
+            @. residual = _gaussian_residual(position, move.anchor, scale) - move.mean
+            _gaussian_solve!(move.factor, view(work, j:j, :))
+            distance = _gaussian_distance(residual, H)
+        end
+        store!(i, distance)
     end
     return nothing
 end

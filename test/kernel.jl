@@ -1,6 +1,25 @@
+function test_narrow_mixture_weights(device, executor)
+    @testset "Small random mixture weights" begin
+        target = BatchedLogDensity(x -> 0.0, (v, x) -> fill!(v, 0.0))
+        for (weights, seed) in ((Float16[1, 2^-12], 2179), (Float16[2^-12, 1], 3056),
+                (Float16[2^-12, 1], 1252), (Float32[1, 2^-25], 42_759_292))
+            key = Philox4x64(seed)
+            u = rand_at(subrng(key, 0, 0, 1, 1), Float64, 1)
+            expected = u < first(weights) / sum(Float64, weights) ? 1 : 2
+            move = MoveMixture((StretchMove(), DEMove()), weights)
+            state = initialize(key, target, device([-1.0 0.0 1.0 2.0]); move, executor)
+            @test current_state(step!(state)).move_index == expected
+        end
+    end
+end
+
+include("kernel_mixture.jl")
+
 function test_kernel_executor(device=copy)
     @testset "Kernel executor" begin
         test_proposal_overflow(device; executor=KernelExecutor())
+        test_keyed_kernel_mixture(device)
+        test_narrow_mixture_weights(device, KernelExecutor())
         scalar(x::Vector) = -sum(abs2, x) / 2
         batch!(values, positions) = (values .= vec(-sum(abs2, positions; dims=1) / 2))
         target = BatchedLogDensity(scalar, batch!)
@@ -128,7 +147,7 @@ function test_kernel_executor(device=copy)
         end
         widths = Int[]
         flat = BatchedLogDensity(_ -> 0.0, (v, x) -> (push!(widths, size(x, 2)); fill!(v, 0)))
-        duplicates = reshape([0.0, 0, 0, 0, 0, 0, 0, 1], 1, :)
+        duplicates = reshape([0.0, 0, 0, 0, 0, 0, 0.25, 0.5], 1, :)
         expected = sample!(initialize(test_rng(), flat, duplicates; move=DESnookerMove()), 1)
         expected_widths = copy(widths)
         empty!(widths)
@@ -137,6 +156,9 @@ function test_kernel_executor(device=copy)
         draws = sample!(degenerate, 1)
         transition = snapshot(degenerate)
         rejected = .!Array(transition.accepted)
+        @test any(rejected)
+        @test reduce(hcat, Array.(transition.positions)) != duplicates
+        @test 1 in widths && length(widths) < 4  # Partial and empty two-walker groups.
         @test all(iszero, Array(transition.acceptance_probabilities)[rejected])
         @test Array.(transition.candidates[rejected]) == Array.(transition.positions[rejected])
         @test widths == expected_widths
@@ -237,12 +259,10 @@ function test_kernel_executor(device=copy)
             slots = 4:(n + 3)
             valid = first(rand_next(Philox4x64(n), Bool, last(slots)))
             indices, status = device(zeros(Int, n)), device(zeros(Int, 3))
-            EnsembleMCMC._compact_kernel!(backend, width)(indices, status, device(valid), slots;
+            EnsembleMCMC._compact_kernel!(backend, width)(indices, status, device(valid), slots, nothing;
                 ndrange=width)
             count = Array(status)[1]
             Array(indices)[1:count] == filter(i -> valid[i], slots)
         end
     end
 end
-
-test_kernel_executor()

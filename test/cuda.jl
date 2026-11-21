@@ -1,7 +1,10 @@
 # GPU tests. `Pkg.test()` does not run them. Run from the repository root on a CUDA machine:
 #   julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.develop(path="."); Pkg.add(["CUDA", "MLDataDevices", "PureRNGs", "Test"]); include("test/cuda.jl")'
 # The tests use the current device. Call `CUDA.device!(i)` before the include to choose another one.
-using CUDA, EnsembleMCMC, Test
+using CUDA
+CUDA.functional() || error("CUDA tests require a functional CUDA device")
+
+using EnsembleMCMC, Test
 using MLDataDevices: CUDADevice
 using PureRNGs: Philox4x64, Threefry4x64, rand_next, randn_next, subrng
 using EnsembleMCMC: initialize, step!, sample!, current_state, snapshot, synchronize!
@@ -94,8 +97,6 @@ function test_cuda()
     end
 end
 
-if CUDA.functional()
+@testset "CUDA on $(CUDA.name(CUDA.device()))" begin
     test_cuda()
-else
-    @info "CUDA is not functional, skipping the CUDA tests"
 end

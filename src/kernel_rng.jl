@@ -1,7 +1,13 @@
 # Walker IDs and the initial permutation stay on the same device as the positions.
 _kernel_vector(initial, values) = copyto!(similar(initial, eltype(values), length(values)), values)
 
-_purpose_buffer(initial, key::AbstractPureRNG) = similar(initial, typeof(key), 4)
+_shuffle_workgroup_limit(execution) = 512
+
+function _purpose_buffer(initial, key::AbstractPureRNG)
+    # Sparse CPU coordinates still need dense storage for the four RNG keys.
+    return KA.get_backend(initial) isa KA.CPU ? Vector{typeof(key)}(undef, 4) :
+        similar(initial, typeof(key), 4)
+end
 _purpose_buffer(initial, key::T, buffer::AbstractVector{T}) where {T<:AbstractPureRNG} = buffer
 _purpose_buffer(initial, key, buffer) = _purpose_buffer(initial, key)
 
@@ -189,7 +195,7 @@ function _sweep_inputs(state, w::KernelWorkspace, sweep_key, proposal_index)
     if n <= 4096
         # The walker count bounds every link. Three Int32 entries per slot use at most 48 KiB.
         capacity = nextpow(2, n)
-        threads = min(512, capacity)
+        threads = min(_shuffle_workgroup_limit(w.execution), capacity)
         _launch_kernel(w, _permute_shared_kernel!, threads, threads, w.permutation, b.order, purposes,
             b.schedule, width, Val(capacity))
     else
@@ -202,7 +208,7 @@ function _sweep_inputs(state, w::KernelWorkspace, sweep_key, proposal_index)
     move = state.moves[idx]
     if move isa DESnookerMove
         # Partners depend only on the permutation. Geometry still uses each group's updated complement.
-        _launch_kernel(w, _snooker_controls_kernel!, 64, n, w.controls, w.factors,
+        _launch_kernel(w, _snooker_controls_kernel!, 64, n, w.controls, w.uniforms,
             w.permutation, w.walker_ids, groups, move, purposes)
     end
     return idx, groups, purposes

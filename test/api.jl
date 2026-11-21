@@ -26,6 +26,18 @@ error_of(f) = try f(); nothing; catch err; err; end
     @test_throws MethodError EnsembleMCMC.sample(gaussian_logdensity, initial, 2)
 end
 
+@testset "Narrow one-call sample counts" begin
+    initial = initial_walkers()[1:6]
+    reference = initialize(test_rng(), gaussian_logdensity, initial)
+    step!(reference, 3)
+    @test EnsembleMCMC.sample(test_rng(), gaussian_logdensity, initial, Int8(16);
+        warmup=Int8(3), thin=Int8(8)) == sample!(reference, 16; thin=8)
+    @test EnsembleMCMC.sample(test_rng(), gaussian_logdensity, initial, 0;
+        thin=big(typemax(Int)) + 1) == sample!(reference, 0)
+    @test_throws ArgumentError EnsembleMCMC.sample(test_rng(), gaussian_logdensity, initial, 1;
+        warmup=typemax(Int))
+end
+
 @testset "Move-aware walker counts" begin
     for move in (
         StretchMove(),
@@ -81,6 +93,41 @@ end
         sample!(initialize(test_rng(), lp, initial; move=MoveMixture(moves, [2, 1]; schedule=:cycle)), 6)
     @test sample!(initialize(test_rng(), lp, initial; move=MoveMixture(moves, (0.5, 1))), 6) ==
         sample!(initialize(test_rng(), lp, initial; move=MoveMixture(moves, [0.5, 1.0])), 6)
+end
+
+@testset "Offset walker IDs preserve replay" begin
+    initial = initial_walkers()[1:6]
+    ids = 3:8
+    expected = EnsembleMCMC.sample(test_rng(), gaussian_logdensity, initial, 5; walker_ids=collect(ids))
+    actual = EnsembleMCMC.sample(test_rng(), gaussian_logdensity, initial, 5;
+        walker_ids=Base.IdentityUnitRange(ids))
+    @test actual == expected
+end
+
+struct ShiftedCoordinates{T} <: AbstractVector{T}
+    values::Vector{T}
+end
+Base.size(x::ShiftedCoordinates) = size(x.values)
+Base.axes(x::ShiftedCoordinates) = (Base.IdentityUnitRange(0:(length(x.values) - 1)),)
+Base.IndexStyle(::Type{<:ShiftedCoordinates}) = IndexLinear()
+Base.getindex(x::ShiftedCoordinates, i::Int) = x.values[i + 1]
+
+@testset "Nested offset coordinates preserve replay" begin
+    initial = initial_walkers()[1:6]
+    shifted = ShiftedCoordinates.(copy.(initial))
+    @test validate_positions(shifted) === nothing
+    state = initialize(test_rng(), gaussian_logdensity, shifted)
+    reference = initialize(test_rng(), gaussian_logdensity, initial)
+    shifted[1].values[1] = 100
+    @test sample!(state, 4) == sample!(reference, 4)
+
+    replacement = [x .+ 0.25 for x in initial]
+    mixed = AbstractVector[replacement...]
+    mixed[2] = ShiftedCoordinates(replacement[2])
+    values = gaussian_logdensity.(replacement)
+    synchronize!(state, mixed, values)
+    synchronize!(reference, replacement, values)
+    @test snapshot(state) == snapshot(reference)
 end
 
 @testset "Addressed proposal index bounds" begin
@@ -161,6 +208,21 @@ end
         @test sample!(state, 5) == reference
         @test (off_caller[] > 0) == spawns
     end
+end
+
+@testset "Threaded targets can throw nothing" begin
+    initial = initial_walkers()[1:4]
+    values = gaussian_logdensity.(initial)
+    state = initialize(test_rng(), _ -> throw(nothing), initial;
+        executor=ThreadedExecutor(), logdensities=values)
+    result = try
+        step!(state)
+        :returned
+    catch err
+        Some(err)
+    end
+    @test result === Some(nothing)
+    @test_throws ArgumentError current_state(state)
 end
 
 @testset "Threaded failures wait for sibling callbacks" begin

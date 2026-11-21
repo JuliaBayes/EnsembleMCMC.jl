@@ -26,12 +26,13 @@
             push!(widths, size(positions, 2))
             values .= gaussian_logdensity.(eachcol(positions))
         end
-        initial = Float32[0 0 0 1]
+        initial = Float32[0 0.125 0 0.125]
         state = initialize(test_rng(), BatchedLogDensity(scalar, batch!), initial;
             move=DESnookerMove())
         @test scalar_calls[] == size(initial, 2)
         step!(state)
         @test scalar_calls[] == size(initial, 2)
+        @test reduce(hcat, current_state(state).positions) != initial
         @test !isempty(widths)
         @test sum(widths) < size(initial, 2)
         @test all(>(0), widths)
@@ -52,6 +53,28 @@
             @test actual.positions ≈ expected.positions
             @test actual.accepted == expected.accepted
             @test !isempty(widths) && all(==(2), widths)
+        end
+    end
+
+    @testset "Batch storage fits odd proposal groups" begin
+        initial = reduce(hcat, initial_walkers()[1:13])
+        snooker = MoveMixture((StretchMove(), DESnookerMove()), (0, 1); schedule=:cycle)
+        for executor in (SerialExecutor(), KernelExecutor()),
+            (move, capacity) in ((StretchMove(), 7), (snooker, 4))
+            widths = Tuple{Int,Int}[]
+            function batch!(values, positions)
+                push!(widths, (size(positions, 2), size(parent(positions), 2)))
+                return map!(gaussian_logdensity, values, eachcol(positions))
+            end
+            variable = BatchedLogDensity(gaussian_logdensity, batch!)
+            padded = BatchedLogDensity(gaussian_logdensity, batch!; batch_size=capacity + 1)
+            actual = sample!(initialize(test_rng(), variable, initial; move, executor), 2)
+            @test maximum(first, widths) == capacity
+            @test all(w -> last(w) == capacity, widths)
+            empty!(widths)
+            expected = sample!(initialize(test_rng(), padded, initial; move, executor), 2)
+            @test all(==((capacity + 1, capacity + 1)), widths)
+            @test actual == expected
         end
     end
 
@@ -79,5 +102,33 @@
             @test err isa DomainError && occursin("sweep 1", err.msg) && occursin("walker", err.msg)
             @test_throws ArgumentError current_state(invalid)
         end
+    end
+end
+
+@testset "Inactive Gaussian components use no workspace" begin
+    initial = first(randn_next(Philox4x64(42), 16, 40))
+    batch!(values, positions) = map!(gaussian_logdensity, values, eachcol(positions))
+    target = BatchedLogDensity(gaussian_logdensity, batch!)
+    for schedule in (:cycle, :random), executor in (SerialExecutor(), KernelExecutor())
+        move = MoveMixture((GaussianReplacementMove(), StretchMove()), (0, 1); schedule)
+        mixed = initialize(test_rng(), target, initial; move, executor)
+        reference = initialize(test_rng(), target, initial; executor)
+        @test Base.summarysize(mixed) - Base.summarysize(reference) < sizeof(initial) ÷ 2
+        for key in (nothing, Threefry4x64(93))
+            if isnothing(key)
+                step!(mixed)
+                # Address the forced Stretch with the original mixture component index.
+                step!(reference, subrng(test_rng(), 0, 0); proposal_index=2)
+            else
+                step!(mixed, key; proposal_index=17)
+                step!(reference, key; proposal_index=17)
+            end
+            actual, expected = current_state(mixed), current_state(reference)
+            @test actual.positions == expected.positions
+            @test actual.candidates == expected.candidates
+            @test actual.accepted == expected.accepted
+            @test actual.move_index == 2
+        end
+        @test current_state(mixed).attempts == [0, 2size(initial, 2)]
     end
 end

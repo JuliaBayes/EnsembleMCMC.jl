@@ -48,7 +48,8 @@ Select one move per complete sweep. `weights` is a vector or tuple of reals.
 selection probabilities after normalization, regardless of weight types.
 `schedule=:cycle` gives a repeating weighted cycle in component order and
 requires integer-valued weights. Weights must be finite and nonnegative,
-with at least one positive weight. The schedule and weights do not adapt.
+with at least one positive weight. Random selection in Float64 requires each
+positive probability to be at least `2^-53`. The schedule and weights do not adapt.
 Zero-weight components keep their indices but do not increase the required
 walker count.
 """
@@ -71,14 +72,44 @@ struct MoveMixture{M<:Tuple,W<:AbstractVector}
             total <= typemax(Int) || throw(ArgumentError("Mixture cycle is too long"))
             Int.(weights)
         elseif schedule == :random
-            values = _promoted_values(map(float, weights))
-            scaled = values ./ maximum(values)
-            scaled ./ sum(scaled)
+            _random_weights(weights)
         else
             throw(ArgumentError("Mixture schedule must be :random or :cycle"))
         end
         new{typeof(ms),typeof(ws)}(ms, ws)
     end
+end
+
+function _random_weights(weights)
+    values = _promoted_values(map(float, weights))
+    T = promote_type(Float64, eltype(values))
+    scaled = values ./ convert(T, maximum(values))
+    normalized = scaled ./ sum(scaled)
+    # A cumulative sum near one can lose O(n*eps) to rounding.
+    threshold = length(values) * eps(Float64)
+    if T === Float64 && any(i -> values[i] > 0 && normalized[i] <= threshold, eachindex(values))
+        return _grid_weights(values)
+    end
+    return normalized
+end
+
+function _grid_weights(values)
+    # The Float64 selection uniform takes exactly 2^53 values j/2^53.
+    # The number strictly below each exact cumulative boundary is its scaled ceiling.
+    masses = Rational{BigInt}.(values)
+    total = sum(masses)
+    cumulative = zero(eltype(masses))
+    previous = 0
+    weights = Vector{Float64}(undef, length(masses))
+    for i in eachindex(masses)
+        mass = (Int64(1) << 53) * masses[i]
+        0 < mass < total && throw(ArgumentError("Positive mixture probabilities must be at least 2^-53"))
+        cumulative += mass
+        edge = ceil(Int64, cumulative / total)
+        weights[i] = (edge - previous) * 0x1p-53
+        previous = edge
+    end
+    return weights
 end
 
 """
@@ -139,7 +170,9 @@ move selected for the latest sweep; `sweep_count` counts completed sweeps.
 Before the first sweep, both scalars and all counts are zero, and `accepted`
 is false for every walker. `candidates`, `candidate_logdensities`, and
 `acceptance_probabilities` describe the last attempted transition, including
-rejections; a NaN candidate density is recorded as -Inf. Before stepping or after
+rejections. A NaN candidate density is recorded as -Inf. An unrepresentable
+Stretch or DE candidate retains its coordinates and receives -Inf without
+evaluating the target. Before stepping or after
 synchronization they describe the current points with zero acceptance
 probabilities and `move_index == 0`.
 
@@ -193,7 +226,12 @@ end
 
 _coordinate_type(::AbstractVector{<:AbstractVector{T}}) where {T} = T
 _coordinate_type(initial) = promote_type(map(eltype, initial)...)
-_allocate_move(move, positions) = move
+_allocate_move(move, positions, L) = move
+
+# Keep the original component indices for reports and addressed RNG streams.
+_allocate_active_moves(allocate, moves, ::Nothing) = map(allocate, moves)
+_allocate_active_moves(allocate, moves, weights) =
+    ntuple(i -> weights[i] > 0 ? allocate(moves[i]) : moves[i], length(moves))
 _prepare_group!(move, state, group, complement, streams) = move
 _promoted_values(values::AbstractVector{T}) where {T} =
     isconcretetype(T) ? values : collect(promote(values...))
@@ -212,14 +250,16 @@ Base.show(io::IO, ::MIME"text/plain", state::EnsembleState) = show(io, state)
 Check that a vector of coordinate vectors or a coordinate-by-walker matrix has
 positive, matching dimensions, finite real coordinates, and full affine rank.
 Return `nothing` without changing the input. Rank validation uses an owned host
-matrix of the positions relative to the first walker, in the floating-point
-coordinate type `T`, after uniform power-of-two rescaling. Singular values at or
-below `max(d, n) * eps(T)` times the largest one count as zero, as in
-`LinearAlgebra.rank`. A full-rank ensemble whose
-smallest-to-largest singular value ratio is below `sqrt(eps(T))` gives a warning,
+matrix of the positions relative to the first walker after uniform power-of-two
+rescaling. The working type `T` is the floating-point coordinate type, with
+`Float16` widened to `Float32`. For `d` coordinates and `n` walkers, the relative
+tolerance is `min(d, n) * eps(T)`, as in `LinearAlgebra.rank`. Singular values
+at or below that tolerance times the largest value count as zero. A full-rank
+ensemble whose smallest-to-largest ratio is below `sqrt(eps(T))` gives a warning,
 because linear moves then stay close to a lower-dimensional subspace.
-Types without an SVD, such as `BigFloat`, use the diagonal of a pivoted QR
-factorization as the singular value estimate.
+For wide matrices with small singular values, a pivoted QR factorization also
+checks rank. Types without an SVD, such as `BigFloat`, use the QR diagonal to
+estimate singular values.
 Call this after retry initialization, before synchronizing replacement positions.
 Move-specific walker requirements are checked by [`initialize`](@ref).
 """
@@ -229,25 +269,40 @@ function validate_positions(positions::AbstractVector)
     d = length(first(positions))
     d > 0 && all(x -> length(x) == d, positions) ||
         throw(DimensionMismatch("Walker dimensions must agree and be positive"))
-    T = float(_coordinate_type(positions))
+    coordinate_type = float(_coordinate_type(positions))
+    T = coordinate_type === Float16 ? Float32 : coordinate_type
     T <: AbstractFloat || throw(ArgumentError("Coordinates must be real floating-point values"))
-    centered = Matrix{T}(reduce(hcat, positions))
-    all(isfinite, centered) || throw(ArgumentError("Coordinates must be finite"))
-    # Bound centering and factorization without rounding normal significands.
-    _, exponent = frexp(maximum(abs, centered))
-    centered .= ldexp.(centered, -exponent)
-    centered .-= centered[:, 1]
+    centered = _centered_positions(positions, T)
     values = _singular_values(centered)
-    tolerance = max(size(centered)...) * eps(T) * first(values)
-    count(>(tolerance), values) == d || throw(ArgumentError("Walkers must have full affine rank"))
+    relative_tolerance = min(size(centered)...) * eps(T)
+    rank = count(>(relative_tolerance * first(values)), values)
+    if T <: LinearAlgebra.BlasFloat && rank == d &&
+        values[d] <= max(size(centered)...) * eps(T) * first(values)
+        # A wide SVD can overstate a small singular value. Pivoted QR on the
+        # original short columns checks whether the extra direction is resolved.
+        diagonal = _qr_diagonal!(_centered_positions(positions, T))
+        rank = count(>(relative_tolerance * first(diagonal)), diagonal)
+    end
+    rank == d || throw(ArgumentError("Walkers must have full affine rank"))
     ratio = values[d] / first(values)
     ratio < sqrt(eps(T)) && @warn string("Walkers are nearly degenerate: the singular value ratio ",
         Float64(ratio), " is below sqrt(eps($T)). Linear moves stay close to a subspace.")
     return nothing
 end
 
+function _centered_positions(positions, ::Type{T}) where {T}
+    centered = Matrix{T}(reduce(hcat, positions))
+    all(isfinite, centered) || throw(ArgumentError("Coordinates must be finite"))
+    # Bound centering and factorization without rounding normal significands.
+    _, exponent = frexp(maximum(abs, centered))
+    centered .= ldexp.(centered, -exponent)
+    centered .-= centered[:, 1]
+    return centered
+end
+
 _singular_values(x::Matrix{<:LinearAlgebra.BlasFloat}) = svdvals!(x)
-_singular_values(x) = sort!(abs.(diag(qr!(x, ColumnNorm()).R)); rev=true)
+_singular_values(x) = _qr_diagonal!(x)
+_qr_diagonal!(x) = sort!(abs.(diag(qr!(x, ColumnNorm()).R)); rev=true)
 
 function validate_positions(positions::AbstractMatrix)
     Base.require_one_based_indexing(positions)
@@ -262,7 +317,8 @@ Create one ensemble from a vector of finite coordinate vectors or a matrix
 with axes (coordinate, walker). The coordinates must have full affine rank
 and initial log densities other than NaN or +Inf. Initial values of -Inf are
 allowed with a warning: stretch, DE and snooker walkers far outside the support
-may never recover. The state copies the coordinates and retains a run key.
+may never recover. The state copies each coordinate vector in iteration order
+and retains a run key.
 
 Pass a PureRNGs key such as `Philox4x64(42)`. The same key and initial points
 reproduce a run within a fixed environment. Its bit position does not enter
@@ -274,10 +330,10 @@ The vector must match walker order and contain real values other than NaN or
 +Inf. Values are copied and promoted independently of coordinate precision.
 The caller must ensure they equal the target at the initial coordinates.
 
-Walker IDs default to the walker indices `1:nwalkers` and remain fixed throughout
-the run. The density must not mutate its input. A scalar density must support
-concurrent calls with ThreadedExecutor; a batched callback controls its own
-parallelism. During sampling, a candidate log density of NaN rejects the
+Walker IDs are read in iteration order, default to the walker indices `1:nwalkers`,
+and remain fixed throughout the run. The density must not mutate its input.
+A scalar density must support concurrent calls with ThreadedExecutor. A batched
+callback controls its own parallelism. A NaN candidate log density rejects the
 candidate like -Inf, and +Inf throws a `DomainError`. Do not mutate state fields.
 Use [`current_state`](@ref) for borrowed inspection and [`snapshot`](@ref) for copies.
 """
@@ -288,13 +344,18 @@ function initialize(
     executor isa KernelExecutor && throw(ArgumentError("KernelExecutor requires an initial matrix"))
     prepared = _prepare_ensemble(logdensity, initial; kwargs...)
     (; positions, logdensities, weights, walker_ids, walker_order) = prepared
-    moves = map(m -> _allocate_move(m, positions), prepared.moves)
+    moves = _allocate_active_moves(prepared.moves, weights) do m
+        _allocate_move(m, positions, eltype(logdensities))
+    end
+    active = isnothing(weights) ? moves : (moves[i] for i in eachindex(moves) if weights[i] > 0)
     d, n = length(first(positions)), length(positions)
     T = eltype(first(positions))
+    A = _acceptance_type(T, eltype(logdensities))
     return EnsembleState(logdensity, moves, weights, executor, _cpu_rng(rng), walker_ids, walker_order,
-        _draw_buffers(T, walker_ids, d, moves),
+        _draw_buffers(T, A, walker_ids, d, active),
         positions, deepcopy(positions), logdensities, copy(logdensities),
-        _batch_workspace(logdensity, positions, logdensities, moves, weights), fill(false, n), zeros(T, n),
+        _batch_workspace(logdensity, positions, logdensities, moves, weights),
+        fill(false, n), zeros(A, n),
         zeros(Int, length(moves)), zeros(Int, length(moves)), 0, 0, true)
 end
 
@@ -309,18 +370,24 @@ function _prepare_ensemble(logdensity, initial; move=StretchMove(),
     validate_positions(initial)
     d = length(first(initial))
     T = float(_coordinate_type(initial))
-    positions = [Vector{T}(x) for x in initial]
+    positions = [Base.has_offset_axes(x) ? copyto!(Vector{T}(undef, d), x) : Vector{T}(x)
+        for x in initial]
     moves = move isa MoveMixture ? map(m -> prepare_move(m, T, d), move.moves) :
         (prepare_move(move, T, d),)
     length(moves) <= _PROPOSALS_PER_PURPOSE || throw(ArgumentError("Too many mixture components"))
     n = length(positions)
-    required = _minimum_walkers(moves, move isa MoveMixture ? move.weights : nothing, d)
+    weights = move isa MoveMixture ? copy(move.weights) : nothing
+    required = _minimum_walkers(moves, weights, d)
     n >= required || throw(ArgumentError(
         "Too few walkers: $n given, the selected moves need $required in $d dimensions"))
+    _check_snooker_start(moves, weights, positions, T)
     length(walker_ids) == n && all(id -> id isa Integer && 1 <= id <= typemax(Int32) - 2, walker_ids) &&
         allunique(walker_ids) ||
         throw(ArgumentError("Walker IDs must be $n distinct integers in 1:$(typemax(Int32) - 2)"))
-    ids = collect(Int, walker_ids)
+    ids = Vector{Int}(undef, n)
+    for (i, id) in enumerate(walker_ids)
+        ids[i] = id
+    end
     values = if isnothing(logdensities)
         [_checked_initial_logdensity(logdensity(x), i) for (i, x) in enumerate(positions)]
     else
@@ -330,7 +397,6 @@ function _prepare_ensemble(logdensity, initial; move=StretchMove(),
     end
     logds = _promoted_values(values)
     _warn_negative_infinity(logds)
-    weights = move isa MoveMixture ? copy(move.weights) : nothing
     return (; positions, logdensities=logds, moves, weights, walker_ids=ids, walker_order=sortperm(ids))
 end
 
@@ -363,7 +429,26 @@ function _warn_negative_infinity(logds)
     return nothing
 end
 
-Base.@inline function _accept_candidate!(state, i, log_hastings, logd, acceptance_part, batched=false)
+# Float16 uniforms have only 2,048 possible values, including zero.
+_acceptance_type(T, L) = promote_type(Float32, T, L)
+
+_hastings_scale(move) = Val(1)
+
+@inline function _acceptance_probability(::Type{T}, proposed, current, log_hastings,
+    ::Val{scale}=Val(1)) where {T,scale}
+    L = promote_type(T, typeof(log_hastings))
+    difference = convert(L, proposed) - current
+    ratio = if scale != 1 && !isfinite(difference)
+        # Opposite infinite terms can have a finite sum at the limits of the exponent range.
+        scale * ((convert(L, proposed) / scale - current / scale) + log_hastings)
+    else
+        difference + scale * log_hastings
+    end
+    ratio = convert(T, ratio)
+    return isnan(ratio) ? zero(T) : clamp(exp(ratio), zero(T), one(T))
+end
+
+Base.@inline function _accept_candidate!(state, i, log_hastings, logd, acceptance_part, scale, batched=false)
     stored_logd = convert(eltype(state.logdensities), logd)
     if isnan(stored_logd)
         stored_logd = convert(eltype(state.logdensities), -Inf)
@@ -371,9 +456,8 @@ Base.@inline function _accept_candidate!(state, i, log_hastings, logd, acceptanc
         _invalid_candidate(state, i, stored_logd, batched)
     end
     state.candidate_logdensities[i] = stored_logd
-    T = eltype(state.positions[i])
-    logratio = convert(T, (stored_logd - state.logdensities[i]) + log_hastings)
-    probability = isnan(logratio) ? zero(T) : clamp(exp(logratio), zero(T), one(T))
+    T = eltype(state.acceptance_probabilities)
+    probability = _acceptance_probability(T, stored_logd, state.logdensities[i], log_hastings, scale)
     state.acceptance_probabilities[i] = probability
     state.accepted[i] = _uniform_at(acceptance_part, T, state.draw_buffers.slots[i]) < probability
     return nothing
@@ -387,7 +471,7 @@ end
 end
 
 _select_move(::Nothing, rng, step) = 1
-function _select_move(weights::Vector{Int}, rng, step)
+function _select_move(weights::AbstractVector{Int}, rng, step)
     offset = mod1(step, sum(weights))
     total = 0
     for i in eachindex(weights)
@@ -411,18 +495,19 @@ function _weighted_move(weights::AbstractVector{T}, u) where {T}
     return last_positive
 end
 
-function _draw_buffers(::Type{T}, ids, d, moves) where {T}
+function _draw_buffers(::Type{T}, ::Type{A}, ids, d, moves) where {T,A}
     n = length(ids)
-    sparse_ids = T <: _HardwareFloat && maximum(ids) != n ? ids : nothing
+    buffered = T <: _HardwareFloat && A <: _HardwareFloat
+    sparse_ids = buffered && maximum(ids) != n ? ids : nothing
     # A sparse buffer uses one slot per stored walker. Its draw still uses the original ID.
     slots = isnothing(sparse_ids) ? ids : eachindex(ids)
-    lanes = T <: _HardwareFloat ? max(1, maximum(_companion_lanes, moves)) : 1
+    lanes = buffered ? max(1, maximum(_companion_lanes, moves)) : 1
     words = Vector{UInt64}(undef, Base.checked_mul(n, lanes))
-    floats = if T <: _HardwareFloat
+    floats = if buffered
         width = maximum(move -> _scale_width(move, d), moves)
         block = isnothing(sparse_ids) ? nothing : Val(min(width, _NORMAL_BLOCK_SIZE))
-        (scale=Vector{T}(undef, Base.checked_mul(n, width)), acceptance=Vector{T}(undef, n),
-            ids=sparse_ids, block=block)
+        (scale=Vector{T}(undef, Base.checked_mul(n, width)),
+            acceptance=Vector{A}(undef, n), ids=sparse_ids, block=block)
     end
     return (; permutation=similar(ids), words, floats, slots)
 end
@@ -519,13 +604,18 @@ function _evaluate!(state, move, streams, i, complement)
     log_hastings = propose!(state.candidates[i], move, state.positions, i,
         complement, streams, state.draw_buffers.slots[i])
     if isnothing(log_hastings)
-        copyto!(state.candidates[i], state.positions[i])
-        state.candidate_logdensities[i] = state.logdensities[i]
+        if move isa Union{StretchMove,DEMove}
+            state.candidate_logdensities[i] = -Inf
+        else
+            copyto!(state.candidates[i], state.positions[i])
+            state.candidate_logdensities[i] = state.logdensities[i]
+        end
         state.acceptance_probabilities[i] = 0
         state.accepted[i] = false
         return nothing
     end
-    return _evaluate_candidate!(state.batch_workspace, state, i, log_hastings, streams.acceptance)
+    return _evaluate_candidate!(state.batch_workspace, state, i, log_hastings,
+        streams.acceptance, _hastings_scale(move))
 end
 
 function _evaluate_group!(::SerialExecutor, state, move, streams, group, complement)
@@ -553,25 +643,29 @@ end
 # Wait for every task before throwing, and rethrow the first task error unwrapped
 # so that callers see the same exception type as with SerialExecutor.
 function _wait_tasks(tasks)
+    # `Some` distinguishes a thrown `nothing` from a successful wait.
     failure = nothing
     for task in tasks
         try
             wait(task)
         catch err
-            isnothing(failure) && (failure = err isa TaskFailedException ? err.task.exception : err)
+            if isnothing(failure)
+                cause = err isa TaskFailedException ? err.task.exception : err
+                failure = Some(cause)
+            end
         end
     end
-    isnothing(failure) || throw(failure)
+    isnothing(failure) || throw(something(failure))
     return nothing
 end
 
-Base.@inline function _evaluate_candidate!(::Nothing, state, i, log_hastings, acceptance_part)
+Base.@inline function _evaluate_candidate!(::Nothing, state, i, log_hastings, acceptance_part, scale)
     logd = state.logdensity(state.candidates[i])
     logd isa Real || throw(ArgumentError(
         "Log density must return a real number, got $(typeof(logd)) for walker $i"))
-    return _accept_candidate!(state, i, log_hastings, logd, acceptance_part)
+    return _accept_candidate!(state, i, log_hastings, logd, acceptance_part, scale)
 end
-function _evaluate_candidate!(workspace::BatchWorkspace, state, i, log_hastings, acceptance_part)
+function _evaluate_candidate!(workspace::BatchWorkspace, state, i, log_hastings, acceptance_part, scale)
     workspace.log_hastings[i] = log_hastings
     state.accepted[i] = true # Marks a valid proposal until the batch is evaluated.
     return nothing
@@ -602,7 +696,8 @@ function _evaluate_batch!(workspace::BatchWorkspace, state, group, streams, move
     for i in group
         state.accepted[i] || continue
         k += 1
-        _accept_candidate!(state, i, workspace.log_hastings[i], values[k], streams.acceptance, true)
+        _accept_candidate!(state, i, workspace.log_hastings[i], values[k],
+            streams.acceptance, _hastings_scale(move), true)
     end
     return nothing
 end
@@ -674,7 +769,7 @@ function _sweep!(state, sweep, proposal_index)
         fitted_move = _prepare_group!(move, state, group, complement, streams)
         _evaluate_group!(state.executor, state, fitted_move, streams, group, complement)
         _evaluate_batch!(state.batch_workspace, state, group, streams, fitted_move)
-        _commit_group!(state, group, state.batch_workspace)
+        _commit_group!(state, group, state.batch_workspace, fitted_move)
     end
     state.active_index = idx
     state.attempts[idx] += length(state.positions)
@@ -684,7 +779,7 @@ function _sweep!(state, sweep, proposal_index)
     return state
 end
 
-function _commit_group!(state, group, workspace)
+function _commit_group!(state, group, workspace, move)
     for i in group
         if state.accepted[i]
             copyto!(state.positions[i], state.candidates[i])
@@ -760,7 +855,8 @@ function sample(
     kwargs...,
 )
     _check_sample_count(nsamples, thin)
-    0 <= warmup <= typemax(Int) - nsamples * thin ||
+    sample_sweeps = iszero(nsamples) ? 0 : Int(nsamples) * Int(thin)
+    0 <= warmup <= typemax(Int) - sample_sweeps ||
         throw(ArgumentError("Warmup must be nonnegative and the total sweep count must fit in Int"))
     state = initialize(rng, logdensity, initial; kwargs...)
     step!(state, warmup)
@@ -801,6 +897,7 @@ of borrowed walkers, gives undefined results. Accept a
 coordinate-by-walker matrix or a vector of coordinate vectors. Walker identities,
 RNG, sweep count, mixture phase, and cumulative counters stay unchanged.
 Clear the last-transition metadata. No target calls or affine-rank check run here.
+Pure snooker runs require a nonzero projection after coordinate conversion.
 The caller must preserve density consistency and affine rank. Use
 [`validate_positions`](@ref) after replacing positions through initialization retries.
 """
@@ -826,6 +923,7 @@ function _synchronize!(state, positions, logdensities, ::Type{T}, ::Type{L}) whe
         throw(ArgumentError("Positions must have matching dimensions and finite coordinates"))
     _kernel_all(v -> !isnan(v) & (v != Inf), L, logdensities) ||
         throw(ArgumentError("Log densities must not contain NaN or +Inf"))
+    _check_snooker_start(state.moves, state.weights, positions, T)
     for i in eachindex(positions)
         _kernel_copyto!(state.positions[i], positions[i])
         _kernel_copyto!(state.candidates[i], positions[i])

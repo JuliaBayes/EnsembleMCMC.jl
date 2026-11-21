@@ -1,21 +1,21 @@
-function _kernel_move(move::GaussianReplacementMove, initial)
-    T = eltype(initial)
+function _kernel_move(move::GaussianReplacementMove, initial, L)
+    T = _gaussian_work_type(eltype(initial), L)
     d, n = size(initial)
     return _AllocatedGaussianMove(move.shrinkage, similar(initial, T, d), similar(initial, T, d),
         similar(initial, T, d, d), similar(initial, T, d, n), nothing)
 end
 
-_kernel_move_supported(::_AllocatedGaussianMove) = true
+_kernel_move_supported(::Union{GaussianReplacementMove,_AllocatedGaussianMove}) = true
 
 _synchronize_move(move::_AllocatedGaussianMove) =
     _kernel_synchronize(move.anchor, move.mean, move.factor, move.scratch)
 
 function _prepare_gaussian_group!(w::KernelWorkspace, move, state, group, indices, streams)
     n = length(indices)
-    _launch_kernel(w, _gather_gaussian_complement_kernel!, (32, 4),
-        (size(w.positions, 1), n), move.scratch, w.positions, w.permutation, indices)
-    scale, valid = _fit_gaussian!(move.anchor, move.mean, move.factor, move.scratch, n,
-        move.shrinkage, w.execution)
+    scale, valid = _fit_gaussian_group!(move, n, w.execution) do
+        _launch_kernel(w, _gather_gaussian_complement_kernel!, (32, 4),
+            (size(w.positions, 1), n), move.scratch, w.positions, w.permutation, indices)
+    end
     return _FittedGaussianMove(move, scale, valid)
 end
 
@@ -33,7 +33,7 @@ function _evaluate_group!(::KernelExecutor, state, fitted::_FittedGaussianMove,
     end
 
     _launch_kernel(w, _draw_gaussian_kernel!, 64, n, move.scratch, w.controls,
-        w.factors, w.permutation, w.walker_ids, group, streams)
+        w.uniforms, w.permutation, w.walker_ids, group, streams, Val(eltype(w.positions)))
     _launch_kernel(w, _propose_gaussian_kernel!, 64, n, w.candidates, w.positions, w.controls,
         w.logh, w.valid, state.accepted, state.candidate_logdensities,
         state.logdensities, state.acceptance_probabilities, move.anchor, move.mean, move.factor,
@@ -50,7 +50,7 @@ end
 
 # PureRNGs bulk and static-vector normal draws follow scalar stream order.
 # Very distant columns use the same child stream as the scalar executor.
-function _device_normal_column!(scratch::AbstractMatrix{T}, j, key, id) where {T<:_HardwareFloat}
+function _device_normal_column!(scratch, j, key, id, ::Type{T}) where {T<:_HardwareFloat}
     d = UInt64(size(scratch, 1))
     if UInt64(id) > div(UInt64(1) << 56, d)
         key = subrng(key, id)
@@ -62,17 +62,17 @@ function _device_normal_column!(scratch::AbstractMatrix{T}, j, key, id) where {T
     end
     return nothing
 end
-_device_normal_column!(scratch, j, key, id) = _normal_column!(key, id, view(scratch, :, j))
+_device_normal_column!(scratch, j, key, id, T) = _normal_column!(key, id, view(scratch, :, j))
 
-KA.@kernel function _draw_gaussian_kernel!(scratch, controls, factors, permutation, walker_ids,
-    group, keys)
+KA.@kernel function _draw_gaussian_kernel!(scratch, controls, uniforms, permutation, walker_ids,
+    group, keys, ::Val{T}) where {T}
     j = @index(Global, Linear)
     walker = permutation[group[j]]
     id = walker_ids[walker]
     streams = _device_streams(keys)
     controls[1, j] = walker
-    factors[2, j] = _uniform_at(streams.acceptance, eltype(factors), id)
-    _device_normal_column!(scratch, j, streams.scale, id)
+    uniforms[j] = _uniform_at(streams.acceptance, eltype(uniforms), id)
+    _device_normal_column!(scratch, j, streams.scale, id, T)
 end
 
 KA.@kernel function _reject_gaussian_group_kernel!(
@@ -111,37 +111,39 @@ KA.@kernel function _propose_gaussian_kernel!(
     dimension = size(positions, 1)
     proposal_valid = true
     for row in 1:dimension
-        offset = zero(eltype(positions))
+        offset = zero(eltype(factor))
         for column in 1:row
             offset += @inbounds factor[row, column] * scratch[column, j]
         end
-        candidate = @inbounds(anchor[row]) + scale * (@inbounds(mean[row]) + offset)
+        proposal = @inbounds _gaussian_position(anchor[row], scale[], mean[row] + offset)
+        candidate = convert(eltype(positions), proposal)
         @inbounds candidates[row, walker] = candidate
         proposal_valid &= isfinite(candidate)
     end
 
-    current_distance = zero(eltype(positions))
-    candidate_distance = zero(eltype(positions))
+    current_distance = zero(eltype(logh))
+    candidate_distance = zero(eltype(logh))
     if proposal_valid
         for row in 1:dimension
-            residual = @inbounds (positions[row, walker] - anchor[row]) / scale - mean[row]
+            residual = @inbounds _gaussian_residual(positions[row, walker], anchor[row], scale) - mean[row]
             for column in 1:(row - 1)
                 residual -= @inbounds factor[row, column] * scratch[column, j]
             end
             residual /= @inbounds factor[row, row]
             @inbounds scratch[row, j] = residual
-            current_distance += (residual / 2) * residual
+            wide = convert(eltype(logh), residual)
+            current_distance += abs2(wide / 2)
         end
         for row in 1:dimension
-            residual = @inbounds (candidates[row, walker] - anchor[row]) / scale - mean[row]
+            residual = @inbounds _gaussian_residual(candidates[row, walker], anchor[row], scale) - mean[row]
             for column in 1:(row - 1)
                 residual -= @inbounds factor[row, column] * scratch[column, j]
             end
             residual /= @inbounds factor[row, row]
             @inbounds scratch[row, j] = residual
-            candidate_distance += (residual / 2) * residual
+            wide = convert(eltype(logh), residual)
+            candidate_distance += abs2(wide / 2)
         end
-        proposal_valid = isfinite(current_distance) && isfinite(candidate_distance)
     end
     @inbounds accepted[walker] = false
     @inbounds valid[j] = proposal_valid

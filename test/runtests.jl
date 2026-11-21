@@ -3,6 +3,8 @@ using EnsembleMCMC: initialize, step!, sample!, current_state, snapshot, synchro
     validate_positions, acceptance_rate
 using LinearAlgebra
 using PureRNGs
+using SparseArrays: sparse
+using StaticArrays: SVector
 using Statistics
 using Test
 
@@ -142,13 +144,36 @@ end
         float_weights = initialize(test_rng(), gaussian_logdensity, initial_walkers();
             move=MoveMixture(moves, [7.0, 3.0]; schedule=:random))
         @test sample!(integer_weights, 12) == sample!(float_weights, 12)
-        # Float16 summation rounds down near the last positive weight.
+        # A trailing zero-weight move cannot be selected.
         rounded = MoveMixture(fill(StretchMove(), 18), [ones(Float16, 17); 0])
         @test EnsembleMCMC.sample(Philox4x64(13), gaussian_logdensity, initial_walkers(), 1;
             move=rounded).move_indices == [17]
+        grid = 0x1p-53
+        for weights in ([1, grid/2], [grid/2, 1], [1, grid], [floatmax(Float64), nextfloat(0.0)])
+            @test_throws ArgumentError MoveMixture(moves, weights)
+        end
+        for weights in ([1-grid, grid, 0], [grid, 0, 1-grid], [1-2grid, grid, grid])
+            mixture = MoveMixture(fill(StretchMove(), 3), weights)
+            @test mixture.weights == weights
+        end
+        # The last positive interval spans three of the highest uniform values.
+        weights = [ones(100); 100 * 4grid; 0]
+        mixture = MoveMixture(fill(StretchMove(), length(weights)), weights)
+        @test mixture.weights[end-1:end] == [3grid, 0]
+        @test EnsembleMCMC._weighted_move(mixture.weights, 1 - 3grid) == 101
+        @test EnsembleMCMC._weighted_move(mixture.weights, 1 - 4grid) == 100
+        @test MoveMixture(moves, BigFloat[1, grid/2]).weights[2] > 0
         float_cycle = initialize(test_rng(), gaussian_logdensity, initial_walkers();
             move=MoveMixture(moves, [2.0, 1.0]; schedule=:cycle))
         @test sample!(float_cycle, 9) == draws
+
+        points = reduce(hcat, initial_walkers())
+        target = BatchedLogDensity(gaussian_logdensity, (v, x) -> map!(gaussian_logdensity, v, eachcol(x)))
+        for executor in (SerialExecutor(), KernelExecutor())
+            move = MoveMixture(moves, SVector(2, 1); schedule=:cycle)
+            state = initialize(test_rng(), target, points; move, executor)
+            @test sample!(state, 6).move_indices == [1, 1, 2, 1, 1, 2]
+        end
     end
 
     @testset "Cached densities and degenerate snooker geometry" begin
@@ -160,10 +185,11 @@ end
         step!(state)
         @test calls[] == 2length(initial)
         calls[] = 0
-        coincident = [[0.0], [0.0], [0.0], [1.0]]
+        coincident = [[0.0], [0.125], [0.0], [0.125]]
         degenerate = initialize(test_rng(), target, coincident; move=DESnookerMove())
         step!(degenerate)
-        @test calls[] < 2length(coincident)
+        @test length(coincident) < calls[] < 2length(coincident)
+        @test current_state(degenerate).positions != coincident
         @test count(!, current_state(degenerate).accepted) > 0
     end
 
@@ -258,6 +284,24 @@ include("batched.jl")
 include("overflow.jl")
 test_proposal_overflow()
 include("kernel.jl")
+test_narrow_mixture_weights(copy, SerialExecutor())
+test_kernel_executor()
+
+@testset "Sparse CPU kernel history" begin
+    initial = [1.0 -1.0 -1.0 1.0 0.0 0.0; 0.0 0.0 1.0 -1.0 2.0 -2.0]
+    density(x) = -sum(abs2, x) / 2
+    batch!(values, positions) = map!(density, values, eachcol(positions))
+    target = BatchedLogDensity(density, batch!)
+    key = Philox4x64(731)
+    dense = initialize(key, target, initial; executor=KernelExecutor())
+    compressed = initialize(key, target, sparse(initial); executor=KernelExecutor())
+    @test sample!(compressed, 5) == sample!(dense, 5)
+
+    address = Threefry4x64(92)
+    step!(compressed, address)
+    step!(dense, address)
+    @test snapshot(compressed) == snapshot(dense)
+end
 
 include("integration.jl")
 include("rng.jl")

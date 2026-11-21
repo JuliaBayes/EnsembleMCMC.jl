@@ -1,6 +1,9 @@
 using EnsembleMCMC, Reactant, CUDA, Test
 using PureRNGs: Philox4x64, randn_next
-using EnsembleMCMC: initialize, step!, sample!, snapshot, synchronize!, current_state
+using EnsembleMCMC: initialize, step!, sample!, snapshot, synchronize!, current_state,
+    validate_positions
+
+include("kernel_mixture.jl")
 
 Reactant.set_default_backend("gpu")
 CUDA.allowscalar(false)
@@ -8,6 +11,42 @@ CUDA.allowscalar(false)
 function batch_normal!(values, positions)
     values .= vec(-sum(abs2, positions; dims = 1) ./ 2)
     return nothing
+end
+
+@testset "Reactant shuffle launch boundaries" begin
+    scalar(x) = -abs2(only(x)) / 2
+    key = Philox4x64(23)
+    for n in (256, 257, 4096, 4097)
+        initial = first(randn_next(Philox4x64(42), 1, n))
+        points = Reactant.to_rarray(initial)
+        width = cld(n, 2)
+        compiled = Reactant.Compiler.compile(
+            batch_normal!, (similar(points, width), similar(points, 1, width)),
+        )
+        target = BatchedLogDensity(scalar, compiled; batch_size = width)
+        device = initialize(key, target, points; move = DEMove(), executor = KernelExecutor())
+        serial = initialize(key, scalar, initial; move = DEMove())
+        actual, expected = sample!(device, 1), sample!(serial, 1)
+        @test Array(actual.accepted) == expected.accepted
+        @test Array(actual.positions) ≈ expected.positions
+        @test Array(actual.logdensities) ≈ expected.logdensities
+    end
+end
+
+@testset "One-dimensional Reactant Gaussian fit" begin
+    initial = [-1.0 1 -1 4]
+    scalar(x) = -abs2(only(x)) / 2
+    points = Reactant.to_rarray(initial)
+    compiled = Reactant.Compiler.compile(batch_normal!, (similar(points, 2), similar(points, 1, 2)))
+    target = BatchedLogDensity(scalar, compiled; batch_size = 2)
+    for s in (:auto, 0, 0.5)
+        move = GaussianReplacementMove(shrinkage = s)
+        device = initialize(Philox4x64(3), target, points; move, executor = KernelExecutor())
+        host = initialize(Philox4x64(3), scalar, initial; move)
+        step!(device)
+        step!(host)
+        @test Array(current_state(device).acceptance_probabilities) ≈ current_state(host).acceptance_probabilities
+    end
 end
 
 @testset "Reactant transitions and retained history" begin
@@ -74,5 +113,75 @@ end
         @test Reactant.XLA.platform_name(Reactant.XLA.default_backend()) == "cpu"
     finally
         Reactant.set_default_backend("gpu")
+    end
+end
+
+@testset "Reactant preserves the sweep failure during cleanup" begin
+    initial = Reactant.to_rarray([-1.0 0 1 0; 0 -1 0 1])
+    scalar(x) = -sum(abs2, x) / 2
+    failure = ErrorException("density callback failed")
+    function batch!(values, positions)
+        # A failed PJRT call can leave its input marked as donated.
+        Reactant.mark_donated!(values)
+        throw(failure)
+    end
+    target = BatchedLogDensity(scalar, batch!; batch_size = 2)
+    state = initialize(Philox4x64(42), target, initial; executor = KernelExecutor())
+    @test_throws failure step!(state)
+    @test_throws ArgumentError current_state(state)
+end
+
+@testset "Reactant position validation" begin
+    coordinates = [0.0 1 2 0 0; 0.0 1 2 1 NaN]
+    points = Reactant.to_rarray(coordinates[:, 1:4])
+    @test validate_positions(points) === nothing
+    @test_throws ArgumentError("Walkers must have full affine rank") validate_positions(
+        Reactant.to_rarray(coordinates[:, 1:3]),
+    )
+    nonfinite = Reactant.to_rarray(coordinates)
+    @test_throws ArgumentError("Coordinates must be finite") validate_positions(nonfinite)
+    @test validate_positions(view(nonfinite, :, [4, 1, 2])) === nothing
+
+    scalar(x) = -sum(abs2, x) / 2
+    target = BatchedLogDensity(scalar, batch_normal!; batch_size = 2)
+    state = initialize(Philox4x64(42), target, points; executor = KernelExecutor())
+    borrowed = current_state(state).positions
+    @test validate_positions(borrowed) === nothing
+    @test validate_positions(borrowed[[4, 1, 2]]) === nothing
+    columns = collect(eachcol(nonfinite))
+    @test validate_positions(columns[[4, 1, 2]]) === nothing
+    @test_throws ArgumentError("Walkers must have full affine rank") validate_positions(
+        columns[[3, 1, 2]],
+    )
+    @test_throws ArgumentError("Coordinates must be finite") validate_positions(columns[[5, 1, 4]])
+end
+
+function prepare_mixture_batch(batch!, points, width)
+    return Reactant.Compiler.compile(
+        batch!, (similar(points, width), similar(points, size(points, 1), width)),
+    )
+end
+
+test_keyed_kernel_mixture(Reactant.to_rarray, prepare_mixture_batch)
+
+@testset "Reactant one-coordinate synchronization" begin
+    scalar(x) = -sum(abs2, Float64.(x)) / 2
+    target = BatchedLogDensity(scalar, batch_normal!; batch_size=2)
+    for T in (Float16, Float64)
+        initial = T[1.5 -0.5 0.75 -0.75]
+        replacement = initial[:, [3, 1, 4, 2]]
+        values = map(scalar, eachcol(replacement))
+        supplied = T === Float16 ? values : Reactant.to_rarray(values)
+        state = initialize(Philox4x64(5), target, Reactant.to_rarray(initial);
+            executor=KernelExecutor())
+        before = current_state(state)
+        @test synchronize!(state, Reactant.to_rarray(replacement), supplied) === state
+        restored = current_state(state)
+        @test restored.positions === before.positions
+        @test reduce(hcat, Array.(restored.positions)) == replacement
+        @test reduce(hcat, Array.(restored.candidates)) == replacement
+        @test Array(restored.logdensities) == values
+        synchronize!(state, restored.positions, restored.logdensities)
+        @test reduce(hcat, Array.(snapshot(state).positions)) == replacement
     end
 end

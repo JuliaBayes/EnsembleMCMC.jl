@@ -2,15 +2,37 @@
 
 ## Unreleased
 
-- Support single-device Reactant PJRT arrays with `KernelExecutor` and fixed-width density callbacks through `BatchedLogDensity(...; batch_size)`.
+### Sampling
+
 - Add `sample(rng, logdensity, initial, nsamples; warmup=0, thin=1)` for one-call inference.
 - Require a PureRNGs key for `sample`, `initialize`, and addressed `step!`. Migrating a Julia `AbstractRNG` or Random123 seed changes its trajectory.
-- Generate move selection, walker shuffles, proposals and acceptance draws on the GPU for CUDA and Reactant.
-- Batch proposal and acceptance draws by walker ID. Compact buffers speed up sweeps with sparse IDs and preserve each walker's random stream when walkers are reordered.
 - Compute Gaussian replacement proposals by group on the CPU.
 - Expose `minimum_walkers(move, dimension)` for move-aware initialization. Zero-weight mixture components no longer increase the required walker count.
+- Preserve rare Metropolis acceptances and extreme Gaussian Hastings ratios across coordinate and density precisions. These fixes can change seeded trajectories.
+- Recover finite Gaussian proposals near floating-point limits. Use automatic shrinkage for numerically rank-deficient complements.
+- Preserve representable Float16 DE jitter. Random mixtures that use Float64 selection reject positive probabilities below `2^-53`.
+- Keep affine-rank checks consistent across population sizes. Reject pure snooker starts and replacement populations when every snooker projection is zero.
+
+### Execution
+
+- Support single-device Reactant PJRT arrays with `KernelExecutor` and fixed-width density callbacks through `BatchedLogDensity(...; batch_size)`.
+- Generate move selection, walker shuffles, proposals and acceptance draws on the GPU for CUDA and Reactant.
+- Batch proposal and acceptance draws by walker ID. Compact buffers speed up sweeps with sparse IDs and preserve each walker's random stream when walkers are reordered.
+- Keep nonfinite Stretch and DE proposals out of density callbacks. Size variable batches for the largest active group and skip scratch storage for disabled moves.
+- Support Float16 Gaussian replacement on CUDA. Fix large Reactant shuffles, one-dimensional Gaussian fits, and synchronization of borrowed walker columns.
+- Preserve the original exception when a threaded target or device callback fails.
+
+### API and documentation
+
 - Define the public API and the scope of seeded replay guarantees.
 - Add an inference tutorial and practical guides, match Wren's documentation styling, and retain documentation for each release.
+- Accept walker IDs and individual coordinate vectors with offset axes, sparse CPU coordinates, static cyclic weights, and narrow integer sample counts.
+- Support PureRNGs 0.0.2 and 0.0.3. Require KernelAbstractions 0.9.45 and StaticArrays 1.1 or later within their supported series.
+- Document walker ordering, fixed proposal scales, Gaussian shrinkage, coordinate resolution, and how to diagnose missed modes.
+
+### Maintenance
+
+- Run native CUDA and Reactant release checks separately. Serialize TagBot jobs and save dependency caches after successful CI jobs.
 
 ## 0.0.5 — 2026-11-02
 

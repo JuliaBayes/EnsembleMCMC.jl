@@ -27,6 +27,9 @@ Add a scaled difference of two distinct companions in the frozen complement.
 The scale is `gamma0 * (1 + sigma * randn())`, with default
 `gamma0 = 2.38 / sqrt(2d)` for dimension `d`. `gamma0` must be finite and
 positive when supplied. `sigma` must be finite and nonnegative.
+For Float16 positions, a positive jitter is applied in Float64 before each
+candidate coordinate is rounded to Float16. Perturbations below the final
+coordinate resolution may round away.
 Uses two groups and requires at least `max(2d, 4)` walkers.
 """
 struct DEMove{G<:Union{Nothing,Real},S<:Real} <: AbstractEnsembleMove
@@ -53,6 +56,8 @@ Project a companion difference onto the line from a reference walker to the
 active walker, then multiply that displacement by `scale`. The scale must be
 finite and positive. Degenerate reference directions produce a rejection.
 Uses four groups and requires at least `max(2d, 4)` walkers for dimension `d`.
+Pure snooker sampling requires four walkers whose positions can be ordered so
+that `(a - b) ⋅ (c - d) ≠ 0`. Otherwise every projected displacement is zero.
 This move is not generally affine-equivariant.
 """
 struct DESnookerMove{S<:Real} <: AbstractEnsembleMove
@@ -67,6 +72,65 @@ struct DESnookerMove{S<:Real} <: AbstractEnsembleMove
 end
 
 DESnookerMove(; scale::Real = 1.7) = DESnookerMove(scale)
+
+function _check_snooker_start(moves, weights, positions, ::Type{T}) where {T}
+    all(moves[i] isa DESnookerMove for i in eachindex(moves)
+        if isnothing(weights) || weights[i] > 0) || return nothing
+    _zero_snooker_projections(positions, T) && throw(ArgumentError(
+        "The walkers give only zero snooker projections. " *
+        "Change the starting points or give another move positive weight."))
+    return nothing
+end
+
+_snooker_host_array(array) = Base.has_offset_axes(array) ? collect(array) : Array(array)
+_snooker_point(point::Vector{T}, ::Type{T}) where {T} = point
+_snooker_point(point, ::Type{T}) where {T} = convert(Vector{T}, _snooker_host_array(point))
+
+_snooker_prefix(positions, n, ::Type{T}) where {T} =
+    map(i -> _snooker_point(positions[i], T), 1:n)
+
+function _snooker_prefix(positions::Base.ColumnSlices, n, ::Type{T}) where {T}
+    matrix = parent(positions)
+    block = view(matrix, :, 1:n)
+    # Transfer the prefix of a device matrix in one copy.
+    host = matrix isa Matrix{T} ? block : convert(Matrix{T}, _snooker_host_array(block))
+    return collect(eachcol(host))
+end
+
+function _zero_snooker_projections(positions, ::Type{T}) where {T}
+    if length(positions) == 4
+        a, b, c, d = map(p -> Rational{BigInt}.(_snooker_point(p, T)), positions)
+        return iszero(dot(a - b, c - d)) && iszero(dot(a - c, b - d)) && iszero(dot(a - d, b - c))
+    end
+    # More than four walkers implies n > d+2 under the 2d minimum. A trapped
+    # population of this size has at most d+1 distinct points, so find a repeat.
+    d = length(first(positions))
+    prefix = _snooker_prefix(positions, d + 2, T)
+    sort!(prefix; by=first, lt=(<))
+    for j in 2:length(prefix)
+        for i in (j - 1):-1:1
+            first(prefix[i]) == first(prefix[j]) || break
+            prefix[i] == prefix[j] && return _orthogonal_snooker_offsets(positions, prefix[i], T)
+        end
+    end
+    return false
+end
+
+function _orthogonal_snooker_offsets(positions, anchor, ::Type{T}) where {T}
+    # Two copies of the anchor let any two other offsets form disjoint edges.
+    # Conversely, pairwise orthogonal offsets make every disjoint edge dot zero.
+    exact_anchor = Rational{BigInt}.(anchor)
+    offsets = typeof(exact_anchor)[]
+    for point in positions
+        p = _snooker_point(point, T)
+        p == anchor && continue
+        length(offsets) == length(anchor) && return false
+        offset = Rational{BigInt}.(p) .- exact_anchor
+        any(v -> !iszero(dot(v, offset)), offsets) && return false
+        push!(offsets, offset)
+    end
+    return true
+end
 
 group_count(::StretchMove) = 2
 group_count(::DEMove) = 2
@@ -92,12 +156,13 @@ function prepare_move(move::DEMove, ::Type{T}, dimension::Integer) where {T<:Rea
     else
         convert(F, move.gamma0)
     end
-    sigma = convert(F, move.sigma)
+    S = F === Float16 && !iszero(move.sigma) ? Float64 : F
+    sigma = convert(S, move.sigma)
     isfinite(gamma0) && gamma0 > zero(gamma0) || throw(ArgumentError(
         "DEMove gamma0 must remain finite and positive after conversion to $(F)",
     ))
     isfinite(sigma) && sigma >= zero(sigma) || throw(ArgumentError(
-        "DEMove sigma must remain finite and nonnegative after conversion to $(F)",
+        "DEMove sigma must remain finite and nonnegative after conversion to $(S)",
     ))
     return DEMove(gamma0, sigma)
 end
@@ -136,7 +201,7 @@ function _proposal_parameters(move::DEMove{T}, complement, streams, walker_id) w
 end
 
 @inline function _linear_candidate(origin, scale, a, b)
-    difference = a - b
+    difference = convert(typeof(scale), a) - b
     candidate = origin + scale * difference
     if isfinite(candidate) || !isfinite(scale)
         return candidate
@@ -159,6 +224,7 @@ function propose!(candidate, move::StretchMove, current, walker_idx::Integer,
     if !all(isfinite, candidate)
         @. candidate = _linear_candidate(current[companion_idx], stretch,
             current[walker_idx], current[companion_idx])
+        all(isfinite, candidate) || return nothing
     end
     return (length(candidate) - 1) * log(stretch)
 end
@@ -166,11 +232,13 @@ end
 function propose!(candidate, move::DEMove, current, walker_idx::Integer,
     complement, streams, walker_id::Integer)
     companion_a, companion_b, gamma = _proposal_parameters(move, complement, streams, walker_id)
+    F = typeof(gamma)
     @. candidate = current[walker_idx] +
-        gamma * (current[companion_a] - current[companion_b])
+        gamma * (convert(F, current[companion_a]) - current[companion_b])
     if !all(isfinite, candidate)
         @. candidate = _linear_candidate(current[walker_idx], gamma,
             current[companion_a], current[companion_b])
+        all(isfinite, candidate) || return nothing
     end
     return zero(move.gamma0)
 end

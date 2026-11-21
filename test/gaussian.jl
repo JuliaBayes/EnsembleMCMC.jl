@@ -100,7 +100,7 @@
         distances = similar(points, length(group))
         work = similar(points, length(group), size(points, 1))
         EnsembleMCMC._gaussian_distances!(work, eachcol(points), group, fit, scale) do i, distance
-            distances[i] = distance
+            distances[i] = 2distance
         end
         return distances
     end
@@ -145,6 +145,56 @@
         end
         @test fit(:auto) == fit(0.5)
         @test fit(:auto).valid
+    end
+
+    @testset "Gaussian pivots on a strided covariance view" begin
+        # The second coordinate has marginal standard deviation 2.5u and
+        # conditional standard deviation 2u. Its relative pivot is exactly 4/5.
+        u = 2.0^20
+        covariance = [4.0 3u; 3u 6.25u^2]
+        storage = zeros(3, 3)
+        factor = view(storage, 1:2, 1:2)
+        limits = zeros(2)
+        for (tolerance, resolved) in ((0.75, true), (0.875, false))
+            copyto!(factor, covariance)
+            @test EnsembleMCMC._gaussian_cholesky!(factor, limits, tolerance) == resolved
+            @test limits == tolerance .* [2.0, 2.5u]
+            @test diag(factor) == [2.0, 2u]
+        end
+        factor[2, 2] = Inf
+        @test !EnsembleMCMC._gaussian_pivots_resolved(factor, limits)
+    end
+
+    @testset "Rank of the frozen covariance in coordinate units" begin
+        # The first complementary group is columns [2, 4, 1].
+        group = [5, 6, 3]
+        X = [4.0 0 4 1 0 1; 4 0 5 1 1 2]
+        # The rank-one complement requires half shrinkage, giving mean (5/3, 5/3)
+        # and covariance (13/3) * [1 1/2; 1/2 1]. Set the target equal to this fit.
+        function target(x)
+            u, v = x .- 5/3
+            return -2/13 * (u^2 - u*v + v^2)
+        end
+        function run(X, shrinkage)
+            state = initialize(Philox4x64(3), target, X; move=GaussianReplacementMove(; shrinkage))
+            step!(state)
+            return snapshot(state)
+        end
+        @test run(X, :auto).acceptance_probabilities[group] ≈ ones(3)
+        X[:, [2, 4, 1]] .= [-3 1 2; -3 1 2]
+        rejected = run(X, 0)
+        @test reduce(hcat, rejected.candidates[group]) == X[:, group]
+        @test !any(rejected.accepted[group])
+
+        X = [0.0 0 2 1 3 1; 1 0 -1 0 1 2]
+        for s in (:auto, 0)
+            expected = reduce(hcat, run(X, s).candidates[group])
+            scaled = copy(X)
+            scaled[2, [2, 4, 1]] .*= 1e-10
+            actual = reduce(hcat, run(scaled, s).candidates[group])
+            actual[2, :] ./= 1e-10
+            @test actual ≈ expected
+        end
     end
 
     @testset "Float32 fit far from the origin" begin
